@@ -9,6 +9,9 @@ build/
 .idea/jarRepositories.xml
 .idea/compiler.xml
 .idea/libraries/
+.idea/data_source_mapping.xml
+.idea/dataSources.xml
+.idea/gradle.xml
 *.iws
 *.iml
 *.ipr
@@ -46,4 +49,4 @@ bin/
 
 ./results
 ./gradle
-.idea
+.idea/*
