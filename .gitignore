@@ -46,3 +46,4 @@ bin/
 
 ./results
 ./gradle
+.idea
