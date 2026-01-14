@@ -5,7 +5,7 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.sql.DataSource
 
 class MappingService(private val targetDataSource: DataSource) {
-    // Кэш для ускорения доступа при миграции связанных таблиц
+
     private val cache = ConcurrentHashMap<UUID, Long>()
     private val CACHE_SIZE_LIMIT = 500_000
 
@@ -25,6 +25,21 @@ class MappingService(private val targetDataSource: DataSource) {
                 CREATE INDEX IF NOT EXISTS idx_mapping_uuid ON migration_mapping(old_uuid);
             """.trimIndent())
         }
+    }
+
+    fun getAllMappedUuids(tableName: String): Set<UUID> {
+        val uuids = mutableSetOf<UUID>()
+        targetDataSource.connection.use { conn ->
+            val pstmt = conn.prepareStatement(
+                "SELECT old_uuid FROM migration_mapping WHERE table_name = ?"
+            )
+            pstmt.setString(1, tableName)
+            val rs = pstmt.executeQuery()
+            while (rs.next()) {
+                uuids.add(rs.getObject("old_uuid") as UUID)
+            }
+        }
+        return uuids
     }
 
     fun getNewId(tableName: String, oldUuid: UUID): Long? {

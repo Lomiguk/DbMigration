@@ -30,16 +30,15 @@ class ResultCollector(
     }
 
     fun saveToHistory() {
-        // 1. Сохраняем параметры запуска
+        // Сохраняем параметры запуска
         File("$runDir/config.txt").writeText("""
             Timestamp: ${config.timestamp}
             Total Records: ${config.totalRecords}
-            Batch Size: ${config.batchSize}
+            Sync Strategy: ${config.syncStrategy}
             Cache Limit: ${config.cacheLimit}
-            DB Version: ${config.dbVersion}
         """.trimIndent())
 
-        // 2. Сохраняем CSV конкретного прогона
+        // Сохраняем CSV конкретного прогона
         File("$runDir/metrics.csv").printWriter().use { out ->
             out.println("table,rows,uuid_idx_mb,int_idx_mb,time_ms")
             tableResults.forEach { m ->
@@ -47,7 +46,7 @@ class ResultCollector(
             }
         }
 
-        // 3. Дублируем в общую историю для графиков
+        // Дублируем в общую историю для графиков
         val historyFile = File("migration_history.csv")
         if (!historyFile.exists()) historyFile.writeText("run_id,table,rows,uuid_idx,int_idx,time\n")
         tableResults.forEach { m ->

@@ -1,24 +1,26 @@
 package sync
 
 import engine.DataMigrator
-import java.util.*
-import javax.sql.DataSource
+import engine.MappingService
 
 class ChangeCapture(
-    private val sourceDataSource: DataSource,
-    private val migrator: DataMigrator
+    private val migrator: DataMigrator,
+    private val mappingService: MappingService
 ) {
-    /**
-     * Поиск записей в исходной БД, которых еще нет в целевой.
-     * Основано на сравнении оригинальных UUID.
-     */
     fun syncUpdates(tables: List<String>) {
-        println("\n>>> Шаг 6: Синхронизация изменений (Delta Sync)...")
+        println("\n>>> Шаг 6: Оптимизированная синхронизация (Memory-Filtered Delta Sync)...")
         tables.forEach { tableName ->
-            // В реальной системе здесь лучше использовать триггеры или WAL,
-            // но для магистерской работы достаточно логики "найди новые UUID"
-            migrator.migrateTable(tableName) // Переиспользуем логику миграции
+            val start = System.currentTimeMillis()
+
+            // Быстро получаем список уже существующих UUID из таблицы маппинга
+            val existingIds = mappingService.getAllMappedUuids(tableName)
+
+            // Запускаем миграцию, передавая этот набор для фильтрации в памяти
+            migrator.migrateTable(tableName, existingIds)
+
+            val duration = System.currentTimeMillis() - start
+
+            println("Синхронизация $tableName завершена за $duration мс (пропущено ${existingIds.size} строк).")
         }
-        println("Синхронизация завершена.")
     }
 }

@@ -13,15 +13,14 @@ class TestDataGenerator(private val url: String) {
             conn.autoCommit = false
             println("Начало генерации данных...")
 
-            // 1. Родительские справочники
+            // Родительские справочники
             val regionIds = insertBatch(conn, "regions", listOf("name"), count) { listOf("Region_$it") }
             val categoryIds = insertBatch(conn, "categories", listOf("title"), count) { listOf("Category_$it") }
             val supplierIds = insertBatch(conn, "suppliers", listOf("name"), count) { listOf("Supplier_$it") }
 
-            // ДОБАВЛЕНО: Генерация клиентов, так как orders ссылается именно на них
             val customerIds = insertBatch(conn, "customers", listOf("name"), count) { listOf("Customer_$it") }
 
-            // 2. Уровень 1
+            // Уровень 1
             insertBatch(conn, "users", listOf("email", "region_id"), count) {
                 listOf("user$it@example.com", regionIds.random())
             }
@@ -29,7 +28,7 @@ class TestDataGenerator(private val url: String) {
                 listOf(categoryIds.random(), supplierIds.random(), "Product_$it", it * 10.5)
             }
 
-            // 3. Уровень 2 (ИСПРАВЛЕНО: привязываем заказы к клиентам, а не к юзерам)
+            // Уровень 2
             val orderIds = insertBatch(conn, "orders", listOf("customer_id"), count) {
                 listOf(customerIds.random()) // Раньше здесь было userIds.random()
             }
