@@ -1,6 +1,8 @@
 package engine
 
 import core.MetadataReader
+import java.sql.PreparedStatement
+import java.sql.Statement.RETURN_GENERATED_KEYS
 import java.util.*
 import javax.sql.DataSource
 
@@ -11,7 +13,7 @@ class DataMigrator(
     private val metadataReader: MetadataReader
 ) {
     fun createTargetSchema(tables: List<String>) {
-        println(">>> Шаг 4: Создание чистой целевой схемы (только BIGINT)...")
+        println(">>> Шаг 2.2: Создание чистой целевой схемы (только BIGINT)...")
         targetDataSource.connection.use { targetConn ->
             tables.forEach { tableName ->
                 val columns = metadataReader.getTableColumns(tableName)
@@ -42,16 +44,18 @@ class DataMigrator(
                 targetConn.autoCommit = false
 
                 // Читаем все данные из исходной таблицы
+                // TODO переделать процесс под работу с пакетами. Таблица целиком может быть излишне большой
                 val rs = sourceConn.createStatement().executeQuery("SELECT * FROM $tableName")
 
                 val placeholders = columns.joinToString(", ") { "?" }
                 val sql = "INSERT INTO $tableName (${columns.joinToString(", ")}) VALUES ($placeholders)"
-                val pstmt = targetConn.prepareStatement(sql, java.sql.Statement.RETURN_GENERATED_KEYS)
+                val preparedStatement = targetConn.prepareStatement(sql, RETURN_GENERATED_KEYS)
 
                 val currentBatchOldUuids = mutableListOf<UUID>()
                 var newRecordsInTable = 0
 
                 while (rs.next()) {
+                    // TODO тут следует аккуратнее относится (это подходит только для наших тестовых данных)
                     val oldPk = rs.getObject("id") as UUID
 
                     if (existingIds.contains(oldPk)) continue
@@ -65,22 +69,23 @@ class DataMigrator(
                         val fk = foreignKeys.find { it.columnName == col }
                         val value = rs.getObject(col)
                         if (fk != null && value is UUID) {
-                            pstmt.setObject(index + 1, mappingService.getNewId(fk.refTable, value))
+                            val preCreatedFTableId = mappingService.getNewId(fk.refTable, value)
+                            preparedStatement.setObject(index + 1, preCreatedFTableId)
                         } else {
-                            pstmt.setObject(index + 1, value)
+                            preparedStatement.setObject(index + 1, value)
                         }
                     }
-                    pstmt.addBatch()
+                    preparedStatement.addBatch()
 
                     if (newRecordsInTable % batchSize == 0) {
-                        processBatch(tableName, pstmt, currentBatchOldUuids)
+                        processBatch(tableName, preparedStatement, currentBatchOldUuids)
                         targetConn.commit()
                         currentBatchOldUuids.clear()
                     }
                 }
 
                 if (currentBatchOldUuids.isNotEmpty()) {
-                    processBatch(tableName, pstmt, currentBatchOldUuids)
+                    processBatch(tableName, preparedStatement, currentBatchOldUuids)
                     targetConn.commit()
                 }
 
@@ -91,9 +96,14 @@ class DataMigrator(
         }
     }
 
-    private fun processBatch(tableName: String, pstmt: java.sql.PreparedStatement, oldUuids: List<UUID>) {
-        pstmt.executeBatch()
-        val generatedKeys = pstmt.generatedKeys
+    private fun processBatch(
+        tableName: String,
+        preparedStatement: PreparedStatement,
+        oldUuids: List<UUID>
+    ) {
+
+        preparedStatement.executeBatch()
+        val generatedKeys = preparedStatement.generatedKeys
         val batchMappings = mutableMapOf<UUID, Long>()
 
         var i = 0

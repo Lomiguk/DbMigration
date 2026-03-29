@@ -4,13 +4,18 @@ import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import javax.sql.DataSource
 
-class MappingService(private val targetDataSource: DataSource) {
+class MappingService(
+    private val targetDataSource: DataSource
+) {
 
     private val cache = ConcurrentHashMap<UUID, Long>()
-    private val CACHE_SIZE_LIMIT = 500_000
 
     init {
         createMappingTable()
+    }
+
+    companion object {
+        private const val CACHE_SIZE_LIMIT = 500_000
     }
 
     private fun createMappingTable() {
@@ -43,10 +48,10 @@ class MappingService(private val targetDataSource: DataSource) {
     }
 
     fun getNewId(tableName: String, oldUuid: UUID): Long? {
-        // 1. Проверка в кэше
+        // Проверка в кэше
         cache[oldUuid]?.let { return it }
 
-        // 2. Поиск в БД целевой системы
+        // Поиск в БД целевой системы
         targetDataSource.connection.use { conn ->
             val pstmt = conn.prepareStatement(
                 "SELECT new_id FROM migration_mapping WHERE table_name = ? AND old_uuid = ?"

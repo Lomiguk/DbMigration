@@ -19,6 +19,10 @@ class DependencyResolver {
         }
     }
 
+    /**
+     * Метод возвращает список названий таблиц (List<String>) в таком порядке,
+     * что родительская таблица всегда идет перед дочерней.
+     */
     fun getMigrationOrder(): List<String> {
         val order = mutableListOf<String>()
         val iterator = TopologicalOrderIterator(graph)
