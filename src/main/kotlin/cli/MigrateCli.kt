@@ -6,6 +6,7 @@ import cli.commands.MigrateSyncCommand
 import cli.commands.MigrateResumeCommand
 import cli.commands.MigrateStatusCommand
 import cli.commands.MigrateValidateCommand
+import cli.commands.MigrateReplicateCommand
 import cli.commands.ConfigInitCommand
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.subcommands
@@ -29,6 +30,7 @@ class MigrateCli : CliktCommand(
         echo("  sync         Incremental synchronization of new data")
         echo("  resume       Resume interrupted migration")
         echo("  validate     Validate data integrity after migration")
+        echo("  replicate    Logical replication via WAL (CDC)")
         echo("  status       Show migration status and metrics")
         echo("  config-init  Create configuration file")
         echo("")
@@ -56,6 +58,7 @@ fun main(args: Array<String>) {
         MigrateSyncCommand(),
         MigrateResumeCommand(),
         MigrateValidateCommand(),
+        MigrateReplicateCommand(),
         MigrateStatusCommand(),
         ConfigInitCommand()
     ).main(args)
