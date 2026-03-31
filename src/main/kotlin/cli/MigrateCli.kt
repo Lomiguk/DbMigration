@@ -3,7 +3,9 @@ package cli
 import cli.commands.MigrateInitCommand
 import cli.commands.MigrateCopyCommand
 import cli.commands.MigrateSyncCommand
+import cli.commands.MigrateResumeCommand
 import cli.commands.MigrateStatusCommand
+import cli.commands.MigrateValidateCommand
 import cli.commands.ConfigInitCommand
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.subcommands
@@ -17,17 +19,18 @@ class MigrateCli : CliktCommand(
     help = "PostgreSQL UUID to BIGINT Migration Tool"
 ) {
     override fun run() {
-        // Команда без подкоманды показывает справку
         echo("PostgreSQL UUID to BIGINT Migration Tool")
         echo("")
         echo("Usage: migrate <command>")
         echo("")
         echo("Commands:")
-        echo("  init         Анализ схемы и создание графа зависимостей")
-        echo("  copy         Первичный перенос данных из source в target")
-        echo("  sync         Инкрементальная синхронизация новых данных")
-        echo("  status       Вывод статуса и метрик миграции")
-        echo("  config-init  Создание конфигурационного файла")
+        echo("  init         Analyze schema and build dependency graph")
+        echo("  copy         Initial data migration from source to target")
+        echo("  sync         Incremental synchronization of new data")
+        echo("  resume       Resume interrupted migration")
+        echo("  validate     Validate data integrity after migration")
+        echo("  status       Show migration status and metrics")
+        echo("  config-init  Create configuration file")
         echo("")
         echo("Use 'migrate <command> --help' for more information")
     }
@@ -37,7 +40,6 @@ class MigrateCli : CliktCommand(
  * Точка входа приложения
  */
 fun main(args: Array<String>) {
-    // Приветственное сообщение
     println(
         """
         ╔═══════════════════════════════════════════════════════════╗
@@ -48,11 +50,12 @@ fun main(args: Array<String>) {
     )
     println()
 
-    // Запуск CLI с подкомандами
     MigrateCli().subcommands(
         MigrateInitCommand(),
         MigrateCopyCommand(),
         MigrateSyncCommand(),
+        MigrateResumeCommand(),
+        MigrateValidateCommand(),
         MigrateStatusCommand(),
         ConfigInitCommand()
     ).main(args)

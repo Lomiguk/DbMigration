@@ -1,6 +1,7 @@
 package engine
 
 import core.MetadataReader
+import state.StateRepository
 import java.sql.PreparedStatement
 import java.sql.Statement.RETURN_GENERATED_KEYS
 import java.util.*
@@ -10,7 +11,9 @@ class DataMigrator(
     private val sourceDataSource: DataSource,
     private val targetDataSource: DataSource,
     private val mappingService: MappingService,
-    private val metadataReader: MetadataReader
+    private val metadataReader: MetadataReader,
+    private val stateRepository: StateRepository? = null,
+    private val migrationId: String? = null
 ) {
     fun createTargetSchema(tables: List<String>) {
         println(">>> Шаг 2.2: Создание чистой целевой схемы (только BIGINT)...")
@@ -39,13 +42,16 @@ class DataMigrator(
         val columns = metadataReader.getTableColumns(tableName).keys.filter { it != "id" }
         val batchSize = 1000
 
+        // Получение последнего состояния для resume
+        val lastState = migrationId?.let { stateRepository?.getTableState(it, tableName) }
+        val resumeBatchNumber = lastState?.lastBatchNumber ?: 0
+        val lastProcessedUuid = lastState?.lastProcessedUuid?.let { UUID.fromString(it) }
+
         sourceDataSource.connection.use { sourceConn ->
             targetDataSource.connection.use { targetConn ->
                 targetConn.autoCommit = false
 
-                // Читаем все данные из исходной таблицы
-                // TODO переделать процесс под работу с пакетами. Таблица целиком может быть излишне большой
-                val rs = sourceConn.createStatement().executeQuery("SELECT * FROM $tableName")
+                val rs = sourceConn.createStatement().executeQuery("SELECT * FROM $tableName ORDER BY id")
 
                 val placeholders = columns.joinToString(", ") { "?" }
                 val sql = "INSERT INTO $tableName (${columns.joinToString(", ")}) VALUES ($placeholders)"
@@ -53,17 +59,23 @@ class DataMigrator(
 
                 val currentBatchOldUuids = mutableListOf<UUID>()
                 var newRecordsInTable = 0
+                var currentBatchNumber = 0
+                var lastUuid: UUID? = null
 
                 while (rs.next()) {
-                    // TODO тут следует аккуратнее относится (это подходит только для наших тестовых данных)
                     val oldPk = rs.getObject("id") as UUID
 
-                    if (existingIds.contains(oldPk)) continue
+                    // Пропуск уже обработанных записей при resume
+                    if (lastProcessedUuid != null && oldPk <= lastProcessedUuid) {
+                        continue
+                    }
 
+                    if (existingIds.contains(oldPk)) continue
                     if (mappingService.getNewId(tableName, oldPk) != null) continue
 
                     currentBatchOldUuids.add(oldPk)
                     newRecordsInTable++
+                    lastUuid = oldPk
 
                     columns.forEachIndexed { index, col ->
                         val fk = foreignKeys.find { it.columnName == col }
@@ -78,15 +90,27 @@ class DataMigrator(
                     preparedStatement.addBatch()
 
                     if (newRecordsInTable % batchSize == 0) {
+                        currentBatchNumber++
                         processBatch(tableName, preparedStatement, currentBatchOldUuids)
                         targetConn.commit()
+
+                        // Сохранение прогресса для возможности resume
+                        migrationId?.let { mid ->
+                            stateRepository?.saveProgress(mid, tableName, newRecordsInTable.toLong(), lastUuid, currentBatchNumber)
+                        }
+
                         currentBatchOldUuids.clear()
                     }
                 }
 
                 if (currentBatchOldUuids.isNotEmpty()) {
+                    currentBatchNumber++
                     processBatch(tableName, preparedStatement, currentBatchOldUuids)
                     targetConn.commit()
+
+                    migrationId?.let { mid ->
+                        stateRepository?.saveProgress(mid, tableName, newRecordsInTable.toLong(), lastUuid, currentBatchNumber)
+                    }
                 }
 
                 if (newRecordsInTable > 0) {
