@@ -1,9 +1,14 @@
 plugins {
     kotlin("jvm") version "2.2.20"
+    application
 }
 
 group = "com.lomiguk"
 version = "1.0-SNAPSHOT"
+
+application {
+    mainClass.set("cli.MigrateCliKt")
+}
 
 repositories {
     mavenCentral()
@@ -29,14 +34,46 @@ dependencies {
     // Логирование процессов миграции
     implementation("ch.qos.logback:logback-classic:1.4.11")
 
-    testImplementation("org.testcontainers:postgresql:1.19.3")
+    // === CLI и UI ===
+    // Clikt - фреймворк для создания CLI приложений
+    implementation("com.github.ajalt.clikt:clikt:4.4.0")
+    // Mordant - консольный UI с цветами и прогресс-барами
+    implementation("com.github.ajalt.mordant:mordant:2.7.2")
+
+    // === Тестовые зависимости ===
+    // JUnit 5 - фреймворк для тестирования
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
+    testImplementation("org.junit.jupiter:junit-jupiter-params:5.10.0")
+
+    // Testcontainers - интеграционные тесты с PostgreSQL
+    testImplementation("org.testcontainers:postgresql:1.19.3")
+    testImplementation("org.testcontainers:junit-jupiter:1.19.3")
+
+    // AssertJ - fluent assertions для читаемых проверок
+    testImplementation("org.assertj:assertj-core:3.24.2")
+
+    // MockK - мокирование для Kotlin
+    testImplementation("io.mockk:mockk:1.13.8")
+
+    // Kotlin coroutines test
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 
     testImplementation(kotlin("test"))
 }
 
 tasks.test {
     useJUnitPlatform()
+
+    // Настройки для интеграционных тестов
+    maxParallelForks = 1
+    testLogging {
+        events("passed", "skipped", "failed")
+        showStandardStreams = true
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
+
+    // Увеличиваем heap size для тестов с большими данными
+    jvmArgs = listOf("-Xmx2G", "-XX:+UseG1GC")
 }
 kotlin {
     jvmToolchain(17)
