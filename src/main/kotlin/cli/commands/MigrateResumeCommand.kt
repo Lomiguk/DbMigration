@@ -7,7 +7,8 @@ import config.MigrateCommand
 import core.DependencyResolver
 import core.MetadataReader
 import engine.DataMigrator
-import engine.MappingService
+import engine.MappingServiceFactory
+import engine.MappingStrategy
 import state.StateRepository
 import ui.MigrationUi
 
@@ -87,7 +88,7 @@ class MigrateResumeCommand : MigrateCommand(
 
             // Запуск миграции
             ui.printSectionTitle("Возобновление миграции")
-            val mappingService = MappingService(targetDs)
+            val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, 10_000_000)
             val migrator = DataMigrator(sourceDs, targetDs, mappingService, reader, stateRepository, migrationId)
 
             var totalRows = 0L

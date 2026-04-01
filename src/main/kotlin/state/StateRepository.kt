@@ -114,7 +114,7 @@ class StateRepository(private val dataSource: DataSource) {
         tableName: String,
         processedRows: Long,
         lastUuid: UUID? = null,
-        batchNumber: Int
+        batchNumber: Long
     ) {
         dataSource.connection.use { conn ->
             conn.prepareStatement("""
@@ -127,7 +127,7 @@ class StateRepository(private val dataSource: DataSource) {
             """).use { pstmt ->
                 pstmt.setLong(1, processedRows)
                 pstmt.setString(2, lastUuid?.toString())
-                pstmt.setInt(3, batchNumber)
+                pstmt.setLong(3, batchNumber)
                 pstmt.setString(4, migrationId)
                 pstmt.setString(5, tableName)
                 pstmt.executeUpdate()
@@ -264,6 +264,67 @@ class StateRepository(private val dataSource: DataSource) {
                 pstmt.setString(1, migrationId)
                 val rs = pstmt.executeQuery()
                 return rs.next() && rs.getInt(1) > 0
+            }
+        }
+    }
+
+    /**
+     * Получение списка успешно мигрированных таблиц
+     */
+    fun getCompletedTables(migrationId: String): List<String> {
+        val tables = mutableListOf<String>()
+        dataSource.connection.use { conn ->
+            conn.prepareStatement("""
+                SELECT table_name FROM migration_state 
+                WHERE migration_id = ? AND status = ?
+                ORDER BY completed_at
+            """).use { pstmt ->
+                pstmt.setString(1, migrationId)
+                pstmt.setString(2, MigrationStatus.COMPLETED.name)
+                val rs = pstmt.executeQuery()
+                while (rs.next()) {
+                    tables.add(rs.getString("table_name"))
+                }
+            }
+        }
+        return tables
+    }
+
+    /**
+     * Пометка таблицы как откатанной
+     */
+    fun markRolledBack(migrationId: String, tableName: String) {
+        dataSource.connection.use { conn ->
+            conn.prepareStatement("""
+                UPDATE migration_state 
+                SET status = ?, 
+                    completed_at = NULL,
+                    processed_rows = 0,
+                    error_message = ?,
+                    updated_at = NOW()
+                WHERE migration_id = ? AND table_name = ?
+            """).use { pstmt ->
+                pstmt.setString(1, MigrationStatus.PENDING.name)
+                pstmt.setString(2, "Rolled back")
+                pstmt.setString(3, migrationId)
+                pstmt.setString(4, tableName)
+                pstmt.executeUpdate()
+            }
+        }
+    }
+
+    /**
+     * Удаление состояния для таблицы (полная очистка)
+     */
+    fun removeTableState(migrationId: String, tableName: String) {
+        dataSource.connection.use { conn ->
+            conn.prepareStatement("""
+                DELETE FROM migration_state 
+                WHERE migration_id = ? AND table_name = ?
+            """).use { pstmt ->
+                pstmt.setString(1, migrationId)
+                pstmt.setString(2, tableName)
+                pstmt.executeUpdate()
             }
         }
     }

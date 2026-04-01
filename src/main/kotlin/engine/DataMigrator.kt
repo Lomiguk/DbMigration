@@ -1,6 +1,7 @@
 package engine
 
 import core.MetadataReader
+import logging.PerformanceLogger
 import state.StateRepository
 import java.sql.PreparedStatement
 import java.sql.Statement.RETURN_GENERATED_KEYS
@@ -10,7 +11,7 @@ import javax.sql.DataSource
 class DataMigrator(
     private val sourceDataSource: DataSource,
     private val targetDataSource: DataSource,
-    private val mappingService: MappingService,
+    private val mappingService: MappingServiceBase,
     private val metadataReader: MetadataReader,
     private val stateRepository: StateRepository? = null,
     private val migrationId: String? = null
@@ -38,6 +39,9 @@ class DataMigrator(
     }
 
     fun migrateTable(tableName: String, existingIds: Set<UUID> = emptySet()) {
+        // Инициализация логирования для этой таблицы
+        PerformanceLogger.startTable(tableName)
+        
         val foreignKeys = metadataReader.getForeignKeysForTable(tableName)
         val columns = metadataReader.getTableColumns(tableName).keys.filter { it != "id" }
         val batchSize = 1000
@@ -58,8 +62,8 @@ class DataMigrator(
                 val preparedStatement = targetConn.prepareStatement(sql, RETURN_GENERATED_KEYS)
 
                 val currentBatchOldUuids = mutableListOf<UUID>()
-                var newRecordsInTable = 0
-                var currentBatchNumber = 0
+                var newRecordsInTable: Long = 0L
+                var currentBatchNumber: Long = 0L
                 var lastUuid: UUID? = null
 
                 while (rs.next()) {
@@ -89,14 +93,14 @@ class DataMigrator(
                     }
                     preparedStatement.addBatch()
 
-                    if (newRecordsInTable % batchSize == 0) {
+                    if (newRecordsInTable % batchSize == 0L) {
                         currentBatchNumber++
-                        processBatch(tableName, preparedStatement, currentBatchOldUuids)
+                        processBatch(tableName, preparedStatement, currentBatchOldUuids, currentBatchNumber)
                         targetConn.commit()
 
                         // Сохранение прогресса для возможности resume
                         migrationId?.let { mid ->
-                            stateRepository?.saveProgress(mid, tableName, newRecordsInTable.toLong(), lastUuid, currentBatchNumber)
+                            stateRepository?.saveProgress(mid, tableName, newRecordsInTable, lastUuid, currentBatchNumber)
                         }
 
                         currentBatchOldUuids.clear()
@@ -105,16 +109,24 @@ class DataMigrator(
 
                 if (currentBatchOldUuids.isNotEmpty()) {
                     currentBatchNumber++
-                    processBatch(tableName, preparedStatement, currentBatchOldUuids)
+                    processBatch(tableName, preparedStatement, currentBatchOldUuids, currentBatchNumber)
                     targetConn.commit()
 
                     migrationId?.let { mid ->
-                        stateRepository?.saveProgress(mid, tableName, newRecordsInTable.toLong(), lastUuid, currentBatchNumber)
+                        stateRepository?.saveProgress(mid, tableName, newRecordsInTable, lastUuid, currentBatchNumber)
                     }
                 }
 
                 if (newRecordsInTable > 0) {
                     println("Синхронизация $tableName: добавлено $newRecordsInTable новых строк.")
+                    
+                    // Завершение логирования таблицы
+                    PerformanceLogger.completeTable(
+                        tableName = tableName,
+                        totalRecords = newRecordsInTable,
+                        totalDuration = 0,  // Считаем в другом месте
+                        avgRecordsPerSec = 0.0
+                    )
                 }
             }
         }
@@ -123,10 +135,17 @@ class DataMigrator(
     private fun processBatch(
         tableName: String,
         preparedStatement: PreparedStatement,
-        oldUuids: List<UUID>
+        oldUuids: List<UUID>,
+        batchNumber: Long
     ) {
+        val batchStart = System.currentTimeMillis()
 
+        // Замер INSERT
+        val insertStart = System.currentTimeMillis()
         preparedStatement.executeBatch()
+        val insertDuration = System.currentTimeMillis() - insertStart
+
+        // Замер generated keys
         val generatedKeys = preparedStatement.generatedKeys
         val batchMappings = mutableMapOf<UUID, Long>()
 
@@ -139,6 +158,29 @@ class DataMigrator(
             mappingService.saveMappingInMemory(oldUuid, newId)
         }
 
+        // Замер MAPPING
+        val mappingStart = System.currentTimeMillis()
         mappingService.saveMappingBatch(tableName, batchMappings)
+        val mappingDuration = System.currentTimeMillis() - mappingStart
+
+        val totalBatchDuration = System.currentTimeMillis() - batchStart
+
+        // Логирование метрик
+        PerformanceLogger.logBatch(
+            tableName = tableName,
+            batchNumber = batchNumber,
+            totalRecords = oldUuids.size.toLong(),
+            insertDuration = insertDuration,
+            mappingDuration = mappingDuration,
+            commitDuration = 0,
+            totalBatchDuration = totalBatchDuration
+        )
+
+        PerformanceLogger.logMapping(
+            tableName = tableName,
+            batchNumber = batchNumber,
+            recordsSaved = oldUuids.size.toLong(),
+            durationMs = mappingDuration
+        )
     }
 }

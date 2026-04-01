@@ -1,11 +1,11 @@
 package sync
 
 import engine.DataMigrator
-import engine.MappingService
+import engine.MappingServiceBase
 
 class ChangeCapture(
     private val migrator: DataMigrator,
-    private val mappingService: MappingService
+    private val mappingService: MappingServiceBase
 ) {
     fun syncUpdates(tables: List<String>) {
         println("\n>>> Шаг 6: Оптимизированная синхронизация (Memory-Filtered Delta Sync)...")

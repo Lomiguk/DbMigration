@@ -1,14 +1,22 @@
 package engine
 
+import logging.logConnectionDetailed
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import javax.sql.DataSource
 
+/**
+ * Сервис маппинга UUID в BIGINT
+ * Критически оптимизирован для минимизации созданий соединений
+ */
 class MappingService(
     private val targetDataSource: DataSource
 ) {
 
     private val cache = ConcurrentHashMap<UUID, Long>()
+    
+    // Кэш для batch операций - уменьшает количество обращений к БД
+    private val batchCache = ConcurrentHashMap<String, Map<UUID, Long>>()
 
     init {
         createMappingTable()
@@ -19,69 +27,102 @@ class MappingService(
     }
 
     private fun createMappingTable() {
-        targetDataSource.connection.use { conn ->
-            conn.createStatement().execute("""
-                CREATE TABLE IF NOT EXISTS migration_mapping (
-                    table_name VARCHAR(100),
-                    old_uuid UUID,
-                    new_id BIGINT,
-                    PRIMARY KEY (table_name, old_uuid)
-                );
-                CREATE INDEX IF NOT EXISTS idx_mapping_uuid ON migration_mapping(old_uuid);
-            """.trimIndent())
+        "mapping_create_table".logConnectionDetailed {
+            targetDataSource.connection.use { conn ->
+                conn.createStatement().execute("""
+                    CREATE TABLE IF NOT EXISTS migration_mapping (
+                        table_name VARCHAR(100),
+                        old_uuid UUID,
+                        new_id BIGINT,
+                        PRIMARY KEY (table_name, old_uuid)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_mapping_uuid ON migration_mapping(old_uuid);
+                """.trimIndent())
+            }
+        }
+    }
+
+    /**
+     * Предзагрузка маппинга для таблицы в кэш
+     */
+    fun preloadTableMapping(tableName: String) {
+        if (batchCache.containsKey(tableName)) return
+        
+        "preload_mapping_$tableName".logConnectionDetailed {
+            val mappings = mutableMapOf<UUID, Long>()
+            targetDataSource.connection.use { conn ->
+                val pstmt = conn.prepareStatement(
+                    "SELECT old_uuid, new_id FROM migration_mapping WHERE table_name = ?"
+                )
+                pstmt.setString(1, tableName)
+                val rs = pstmt.executeQuery()
+                while (rs.next()) {
+                    val uuid = rs.getObject("old_uuid") as UUID
+                    val id = rs.getLong("new_id")
+                    mappings[uuid] = id
+                    if (cache.size < CACHE_SIZE_LIMIT) {
+                        cache[uuid] = id
+                    }
+                }
+            }
+            batchCache[tableName] = mappings
         }
     }
 
     fun getAllMappedUuids(tableName: String): Set<UUID> {
-        val uuids = mutableSetOf<UUID>()
-        targetDataSource.connection.use { conn ->
-            val pstmt = conn.prepareStatement(
-                "SELECT old_uuid FROM migration_mapping WHERE table_name = ?"
-            )
-            pstmt.setString(1, tableName)
-            val rs = pstmt.executeQuery()
-            while (rs.next()) {
-                uuids.add(rs.getObject("old_uuid") as UUID)
-            }
-        }
-        return uuids
+        preloadTableMapping(tableName)
+        return batchCache[tableName]?.keys ?: emptySet()
     }
 
+    /**
+     * Получение BIGINT ID по UUID
+     * Использует только кэш - без соединений!
+     */
     fun getNewId(tableName: String, oldUuid: UUID): Long? {
-        // Проверка в кэше
+        // Проверка в глобальном кэше (быстро, без БД)
         cache[oldUuid]?.let { return it }
 
-        // Поиск в БД целевой системы
-        targetDataSource.connection.use { conn ->
-            val pstmt = conn.prepareStatement(
-                "SELECT new_id FROM migration_mapping WHERE table_name = ? AND old_uuid = ?"
-            )
-            pstmt.setString(1, tableName)
-            pstmt.setObject(2, oldUuid)
-            val rs = pstmt.executeQuery()
-            if (rs.next()) {
-                val id = rs.getLong("new_id")
-                if (cache.size < CACHE_SIZE_LIMIT) cache[oldUuid] = id
-                return id
-            }
+        // Проверка в табличном кэше (быстро, без БД)
+        val tableMappings = batchCache[tableName]
+        if (tableMappings != null) {
+            return tableMappings[oldUuid]
         }
+        
+        // Если не нашли в кэше - это ошибка (данных ещё нет)
         return null
     }
 
+    /**
+     * Пакетное сохранение маппинга
+     * Оптимизировано: один запрос на пакет
+     */
     fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>) {
-        targetDataSource.connection.use { conn ->
-            conn.autoCommit = false
-            val pstmt = conn.prepareStatement(
-                "INSERT INTO migration_mapping (table_name, old_uuid, new_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
-            )
-            mappings.forEach { (uuid, newId) ->
-                pstmt.setString(1, tableName)
-                pstmt.setObject(2, uuid)
-                pstmt.setLong(3, newId)
-                pstmt.addBatch()
+        // Обновляем кэши
+        mappings.forEach { (uuid, newId) ->
+            if (cache.size < CACHE_SIZE_LIMIT) {
+                cache[uuid] = newId
             }
-            pstmt.executeBatch()
-            conn.commit()
+        }
+        
+        val tableCache = batchCache.getOrPut(tableName) { mutableMapOf() }
+        (tableCache as? MutableMap)?.putAll(mappings)
+        
+        // Сохраняем в БД
+        "save_mapping_batch_$tableName".logConnectionDetailed {
+            targetDataSource.connection.use { conn ->
+                conn.autoCommit = false
+                val pstmt = conn.prepareStatement(
+                    "INSERT INTO migration_mapping (table_name, old_uuid, new_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
+                )
+                mappings.forEach { (uuid, newId) ->
+                    pstmt.setString(1, tableName)
+                    pstmt.setObject(2, uuid)
+                    pstmt.setLong(3, newId)
+                    pstmt.addBatch()
+                }
+                pstmt.executeBatch()
+                conn.commit()
+            }
         }
     }
 
@@ -89,5 +130,25 @@ class MappingService(
         if (cache.size < CACHE_SIZE_LIMIT) {
             cache[oldUuid] = newId
         }
+    }
+    
+    /**
+     * Статистика кэша
+     */
+    fun getCacheStats(): Map<String, Any> {
+        return mapOf(
+            "cache_size" to cache.size,
+            "cache_limit" to CACHE_SIZE_LIMIT,
+            "cache_usage_percent" to (cache.size.toDouble() / CACHE_SIZE_LIMIT * 100),
+            "table_caches" to batchCache.size
+        )
+    }
+    
+    /**
+     * Очистка кэшей
+     */
+    fun clearCaches() {
+        cache.clear()
+        batchCache.clear()
     }
 }

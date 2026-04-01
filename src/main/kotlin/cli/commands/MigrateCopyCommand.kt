@@ -7,7 +7,8 @@ import config.MigrateCommand
 import core.DependencyResolver
 import core.MetadataReader
 import engine.DataMigrator
-import engine.MappingService
+import engine.MappingServiceFactory
+import engine.MappingStrategy
 import ui.MigrationUi
 import kotlin.system.measureTimeMillis
 
@@ -57,7 +58,21 @@ class MigrateCopyCommand : MigrateCommand(
 
             // Создание целевой схемы
             ui.printInfo("Создание целевой схемы...")
-            val mappingService = MappingService(targetDs)
+            // Инициализация сервиса маппинга с выбранной стратегией
+            val mappingService = MappingServiceFactory.create(
+                targetDs,
+                config.mappingStrategy,
+                config.cacheLimit
+            )
+            
+            // Предзагрузка для EAGER стратегии
+            if (config.mappingStrategy == MappingStrategy.EAGER) {
+                ui.printInfo("Preloading mappings (EAGER strategy)...")
+                val preloadStart = System.currentTimeMillis()
+                mappingService.preloadAllMappings(migrationOrder)
+                ui.printInfo("Preloaded in ${System.currentTimeMillis() - preloadStart}ms")
+            }
+            
             val migrator = DataMigrator(sourceDs, targetDs, mappingService, reader)
 
             if (!config.dryRun) {
@@ -92,6 +107,9 @@ class MigrateCopyCommand : MigrateCommand(
                 totalDuration = totalDuration,
                 success = true
             )
+            
+            // Завершение логирования производительности
+            logging.PerformanceLogger.finish()
 
         } catch (e: Exception) {
             ui.printError("Ошибка миграции: ${e.message}")

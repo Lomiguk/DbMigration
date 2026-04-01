@@ -4,7 +4,7 @@ services:
   # Исходная БД (имитация текущей системы с UUID v4)
   source_db:
     image: postgres:15
-    container_name: source_postgres
+    container_name: source_db
     environment:
       POSTGRES_DB: source_db
       POSTGRES_USER: user
@@ -17,7 +17,7 @@ services:
   # Целевая БД (оптимизированная база с Integer/BigInt)
   target_db:
     image: postgres:15
-    container_name: target_postgres
+    container_name: target_db
     environment:
       POSTGRES_DB: target_db
       POSTGRES_USER: user

@@ -2,7 +2,8 @@ package integration
 
 import core.MetadataReader
 import engine.DataMigrator
-import engine.MappingService
+import engine.MappingServiceFactory
+import engine.MappingStrategy
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Nested
@@ -19,7 +20,7 @@ import java.util.*
 class ChangeCaptureTest : BaseIntegrationTest() {
 
     private lateinit var metadataReader: MetadataReader
-    private lateinit var mappingService: MappingService
+    private lateinit var mappingService: engine.MappingServiceBase
     private lateinit var dataMigrator: DataMigrator
     private lateinit var changeCapture: ChangeCapture
 
@@ -31,7 +32,7 @@ class ChangeCaptureTest : BaseIntegrationTest() {
         executeScript(MigrationTestFixtures.TARGET_SCHEMA_BIGINT)
 
         metadataReader = MetadataReader(dataSource)
-        mappingService = MappingService(dataSource)
+        mappingService = MappingServiceFactory.create(dataSource, MappingStrategy.EAGER, 500_000)
         dataMigrator = DataMigrator(dataSource, dataSource, mappingService, metadataReader)
         changeCapture = ChangeCapture(dataMigrator, mappingService)
     }

@@ -4,6 +4,7 @@ import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.parameters.options.*
 import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.parameters.types.long
+import engine.MappingStrategy
 import java.io.File
 import java.nio.file.Paths
 
@@ -28,7 +29,8 @@ data class MigrationConfig(
 
     // Migration settings
     val batchSize: Int = 1000,
-    val cacheLimit: Int = 500_000,
+    val cacheLimit: Int = 10_000_000,  // Для совместимости
+    val mappingStrategy: MappingStrategy = MappingStrategy.EAGER,
     val maxPoolSize: Int = 10,
     val connectionTimeout: Long = 30000,
 
@@ -110,6 +112,9 @@ abstract class MigrateCommand(name: String, help: String) : CliktCommand(name = 
     protected val verbose by option("--verbose", "-v", help = "Verbose output")
         .flag()
 
+    protected val mappingStrategy by option("--mapping-strategy", "-ms", help = "Mapping strategy: EAGER, LAZY, HYBRID")
+        .default("EAGER")
+
     protected val configFile by option("--config", "-cfg", help = "Path to configuration file")
 
     /**
@@ -120,6 +125,12 @@ abstract class MigrateCommand(name: String, help: String) : CliktCommand(name = 
         val configPath = configFile
         if (configPath != null) {
             return loadConfigFromFile(configPath)
+        }
+
+        val strategy = when (mappingStrategy.uppercase()) {
+            "LAZY" -> MappingStrategy.LAZY
+            "HYBRID" -> MappingStrategy.HYBRID
+            else -> MappingStrategy.EAGER
         }
 
         return MigrationConfig(
@@ -136,7 +147,8 @@ abstract class MigrateCommand(name: String, help: String) : CliktCommand(name = 
             targetPassword = targetPassword,
 
             batchSize = batchSize,
-            cacheLimit = cacheLimit,
+            cacheLimit = 10_000_000,  // Значение по умолчанию
+            mappingStrategy = strategy,
             maxPoolSize = maxPoolSize,
 
             dryRun = dryRun,

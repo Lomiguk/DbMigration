@@ -8,6 +8,8 @@ import core.DependencyResolver
 import core.MetadataReader
 import engine.DataMigrator
 import engine.MappingService
+import engine.MappingServiceFactory
+import engine.MappingStrategy
 import sync.ChangeCapture
 import ui.MigrationUi
 import kotlin.system.measureTimeMillis
@@ -50,15 +52,7 @@ class MigrateSyncCommand : MigrateCommand(
 
             // Получение количества уже мигрированных записей
             ui.printInfo("Анализ текущего состояния...")
-            val mappingService = MappingService(targetDs)
-
-            migrationOrder.forEach { table ->
-                val existingCount = mappingService.getAllMappedUuids(table).size
-                ui.printInfo("Таблица $table: $existingCount уже мигрировано")
-            }
-
-            // Запуск синхронизации
-            ui.printSectionTitle("Синхронизация данных")
+            val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, 10_000_000)
             val migrator = DataMigrator(sourceDs, targetDs, mappingService, reader)
             val syncEngine = ChangeCapture(migrator, mappingService)
 
