@@ -10,6 +10,7 @@ import cli.commands.MigrateReplicateCommand
 import cli.commands.MigrateRollbackCommand
 import cli.commands.MigrateTestSuiteCommand
 import cli.commands.MigrateBackupCommand
+import cli.commands.MigrateGenerateDataCommand
 import cli.commands.ConfigInitCommand
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.subcommands
@@ -37,6 +38,7 @@ class MigrateCli : CliktCommand(
         echo("  replicate    Logical replication via WAL (CDC)")
         echo("  test-suite   Run comprehensive test suite")
         echo("  backup       Manage database backups (create/restore/list)")
+        echo("  generate-data Generate test data in source database")
         echo("  status       Show migration status and metrics")
         echo("  config-init  Create configuration file")
         echo("")
@@ -50,10 +52,10 @@ class MigrateCli : CliktCommand(
 fun main(args: Array<String>) {
     println(
         """
-        ╔═══════════════════════════════════════════════════════════╗
-        ║   PostgreSQL UUID to BIGINT Migration Tool                ║
-        ║   Version 1.0.0                                           ║
-        ╚═══════════════════════════════════════════════════════════╝
+        +===========================================================+
+        |   PostgreSQL UUID to BIGINT Migration Tool                |
+        |   Version 1.0.0                                           |
+        +===========================================================+
         """.trimIndent()
     )
     println()
@@ -68,6 +70,7 @@ fun main(args: Array<String>) {
         MigrateReplicateCommand(),
         MigrateTestSuiteCommand(),
         MigrateBackupCommand(),
+        MigrateGenerateDataCommand(),
         MigrateStatusCommand(),
         ConfigInitCommand()
     ).main(args)

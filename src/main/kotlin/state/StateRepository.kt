@@ -335,7 +335,7 @@ class StateRepository(private val dataSource: DataSource) {
     fun getLastActiveMigration(): String? {
         dataSource.connection.use { conn ->
             conn.prepareStatement("""
-                SELECT DISTINCT migration_id FROM migration_state 
+                SELECT migration_id FROM migration_state 
                 WHERE status IN (?, ?)
                 ORDER BY updated_at DESC
                 LIMIT 1

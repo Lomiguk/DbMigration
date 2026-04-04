@@ -1,11 +1,13 @@
 package logging
 
+import com.zaxxer.hikari.HikariDataSource
 import org.slf4j.LoggerFactory
 import java.io.FileWriter
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -28,6 +30,9 @@ object PerformanceLogger {
     private val batchStats = ConcurrentHashMap<String, BatchStats>()
     private val totalStartTime = System.currentTimeMillis()
     private var initialized = false
+
+    private val scheduler = Executors.newSingleThreadScheduledExecutor()
+    private var isMonitoring = false
 
     private fun ensureInitialized() {
         if (initialized) return
@@ -199,6 +204,7 @@ object PerformanceLogger {
      * Финальный отчёт
      */
     fun finish() {
+        scheduler.shutdownNow()
         ensureInitialized()
         
         summaryLog?.println("\n═══════════════════════════════════════════════════════════")
@@ -242,5 +248,26 @@ object PerformanceLogger {
         summaryLog?.close()
 
         logger.info("Performance logs written to: $logDir/")
+    }
+
+    fun startPoolMonitoring(dataSource: HikariDataSource) {
+        if (isMonitoring) return
+        isMonitoring = true
+
+        val mxBean = dataSource.hikariPoolMXBean
+        if (mxBean != null) {
+            scheduler.scheduleAtFixedRate({
+                try {
+                    val time = System.currentTimeMillis() - totalStartTime
+                    val active = mxBean.activeConnections
+                    val idle = mxBean.idleConnections
+                    val total = mxBean.totalConnections
+                    val waiting = mxBean.threadsAwaitingConnection
+
+                    poolLog?.println("$time,$active,$idle,$total,$waiting")
+                    poolLog?.flush()
+                } catch (e: Exception) { /* Игнорируем ошибки при завершении пула */ }
+            }, 0, 1, TimeUnit.SECONDS) // Собираем метрику каждую секунду
+        }
     }
 }

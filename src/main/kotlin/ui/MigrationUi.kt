@@ -4,50 +4,50 @@ import com.github.ajalt.mordant.terminal.Terminal
 import kotlin.math.roundToInt
 
 /**
- * Консольный UI для отображения прогресса миграции
+ * Console UI for displaying migration progress
  */
 class MigrationUi(private val terminal: Terminal = Terminal()) {
 
     /**
-     * Вывод заголовка секции
+     * Print section title
      */
     fun printSectionTitle(title: String) {
         terminal.println()
-        terminal.println("═".repeat(60))
-        terminal.println("▐ $title ▐")
-        terminal.println("═".repeat(60))
+        terminal.println("=".repeat(60))
+        terminal.println("| $title |")
+        terminal.println("=".repeat(60))
     }
 
     /**
-     * Вывод информационного сообщения
+     * Print info message
      */
     fun printInfo(message: String) {
-        terminal.println("ℹ $message")
+        terminal.println("[i] $message")
     }
 
     /**
-     * Вывод сообщения об успехе
+     * Print success message
      */
     fun printSuccess(message: String) {
-        terminal.println("✓ $message")
+        terminal.println("[+] $message")
     }
 
     /**
-     * Вывод предупреждения
+     * Print warning message
      */
     fun printWarning(message: String) {
-        terminal.println("⚠ $message")
+        terminal.println("[!] $message")
     }
 
     /**
-     * Вывод ошибки
+     * Print error message
      */
     fun printError(message: String) {
-        terminal.println("✗ $message")
+        terminal.println("[x] $message")
     }
 
     /**
-     * Вывод статистики миграции
+     * Print migration stats
      */
     fun printMigrationStats(
         tableName: String,
@@ -64,7 +64,7 @@ class MigrationUi(private val terminal: Terminal = Terminal()) {
     }
 
     /**
-     * Вывод сводки по завершении миграции
+     * Print migration summary
      */
     fun printSummary(
         totalTables: Int,
@@ -73,12 +73,12 @@ class MigrationUi(private val terminal: Terminal = Terminal()) {
         success: Boolean
     ) {
         terminal.println()
-        terminal.println("═".repeat(60))
+        terminal.println("=".repeat(60))
 
         if (success) {
-            terminal.println("✓ MIGRATION COMPLETED SUCCESSFULLY")
+            terminal.println("[+] MIGRATION COMPLETED SUCCESSFULLY")
         } else {
-            terminal.println("✗ MIGRATION FAILED")
+            terminal.println("[x] MIGRATION FAILED")
         }
 
         terminal.println()
@@ -91,11 +91,11 @@ class MigrationUi(private val terminal: Terminal = Terminal()) {
             terminal.println("Average speed: $avgSpeed rec/sec")
         }
 
-        terminal.println("═".repeat(60))
+        terminal.println("=".repeat(60))
     }
 
     /**
-     * Вывод статуса синхронизации
+     * Print sync status
      */
     fun printSyncStatus(tableName: String, newRows: Long, skippedRows: Long, duration: Long) {
         terminal.println()
@@ -106,7 +106,7 @@ class MigrationUi(private val terminal: Terminal = Terminal()) {
     }
 
     /**
-     * Вывод прогресс-бара
+     * Print progress bar
      */
     fun renderProgress(tableName: String, current: Long, total: Long) {
         val percentage = ((current.toDouble() / total) * 100).roundToInt()
@@ -114,7 +114,7 @@ class MigrationUi(private val terminal: Terminal = Terminal()) {
         val filledWidth = ((current.toDouble() / total) * barWidth).roundToInt()
         val emptyWidth = barWidth - filledWidth
 
-        val bar = "█".repeat(filledWidth) + "░".repeat(emptyWidth)
+        val bar = "#".repeat(filledWidth) + "-".repeat(emptyWidth)
         terminal.print("\r[$bar] $percentage% ($current/$total)")
         if (current >= total) {
             terminal.println()
@@ -122,7 +122,7 @@ class MigrationUi(private val terminal: Terminal = Terminal()) {
     }
 
     /**
-     * Вывод прогресса выполнения
+     * Print progress percentage
      */
     fun printProgress(message: String, current: Int, total: Int) {
         val percentage = (current.toDouble() / total * 100).roundToInt()

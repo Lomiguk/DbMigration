@@ -1,14 +1,18 @@
 package tools
 
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import org.slf4j.LoggerFactory
 import java.sql.Connection
-import java.sql.DriverManager
 import java.util.*
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.max
 import kotlin.random.Random
 
 /**
- * Генератор тестовых данных для полной загрузки БД
- * Поддерживает генерацию от 10K до 10M записей
+ * Test data generator with connection pool monitoring
+ * Supports 10K to 10M records generation across 20 tables
  */
 class LargeDataGenerator(
     private val jdbcUrl: String,
@@ -17,17 +21,23 @@ class LargeDataGenerator(
 ) {
     private val logger = LoggerFactory.getLogger(LargeDataGenerator::class.java)
 
+    // Connection tracking
+    private val totalConnectionsCreated = AtomicLong(0)
+    private val totalConnectionsClosed = AtomicLong(0)
+    private val activeConnections = AtomicInteger(0)
+    private val peakActiveConnections = AtomicInteger(0)
+
     /**
-     * Конфигурация генерации
+     * Generation configuration
      */
     data class GenerationConfig(
-        val baseCount: Int = 1_000_000,  // Базовое количество записей для основных таблиц
-        val batchSize: Int = 10000,        // Увеличенный размер пакета для вставки
-        val rewriteBatchedInserts: Boolean = true  // Оптимизация вставки
+        val baseCount: Int = 1_000_000,
+        val batchSize: Int = 10000,
+        val rewriteBatchedInserts: Boolean = true
     )
 
     /**
-     * Статистика генерации
+     * Generation statistics
      */
     data class GenerationStats(
         val tableName: String,
@@ -37,7 +47,21 @@ class LargeDataGenerator(
     )
 
     /**
-     * Полная генерация всех таблиц
+     * Connection pool statistics
+     */
+    data class ConnectionStats(
+        val totalCreated: Long,
+        val totalClosed: Long,
+        val active: Int,
+        val peakActive: Int,
+        val poolActive: Int,
+        val poolIdle: Int,
+        val poolTotal: Int,
+        val poolWaiting: Int
+    )
+
+    /**
+     * Generate data for all tables using HikariCP connection pool
      */
     fun generateAll(config: GenerationConfig = GenerationConfig()): List<GenerationStats> {
         val stats = mutableListOf<GenerationStats>()
@@ -45,191 +69,170 @@ class LargeDataGenerator(
 
         logger.info("Starting data generation: $baseCount base records per table")
 
-        getConnection(config).use { conn ->
-            conn.autoCommit = false
-            
-            // Оптимизация: увеличиваем work_mem и отключаем synchronous_commit
-            conn.createStatement().execute("SET work_mem = '256MB'")
-            conn.createStatement().execute("SET maintenance_work_mem = '512MB'")
-            conn.createStatement().execute("SET synchronous_commit = OFF")
-            conn.createStatement().execute("SET commit_delay = 100000")
+        val pool = createConnectionPool(config)
 
-            try {
-                // Уровень 0: Справочники (без FK)
-                logger.info("Generating level 0 (dictionaries)...")
-                stats.add(generateTable(conn, "regions", baseCount / 100, config) { batch, count ->
-                    val name = "Region_${count}"
-                    batch.add(arrayOf(name))
-                })
+        try {
+            pool.connection.use { conn ->
+                conn.autoCommit = false
 
-                stats.add(generateTable(conn, "suppliers", baseCount / 100, config) { batch, count ->
-                    val name = "Supplier_${count}"
-                    batch.add(arrayOf(name))
-                })
+                // PostgreSQL performance optimizations
+                conn.createStatement().execute("SET work_mem = '256MB'")
+                conn.createStatement().execute("SET maintenance_work_mem = '512MB'")
+                conn.createStatement().execute("SET synchronous_commit = OFF")
+                conn.createStatement().execute("SET commit_delay = 100000")
 
-                stats.add(generateTable(conn, "categories", baseCount / 100, config) { batch, count ->
-                    val title = "Category_${count}"
-                    batch.add(arrayOf(title))
-                })
+                logConnectionStats("START", pool)
 
-                stats.add(generateTable(conn, "customers", baseCount / 10, config) { batch, count ->
-                    val name = "Customer_${count}"
-                    batch.add(arrayOf(name))
-                })
+                try {
+                    // Level 0: Dictionaries (no FK)
+                    logger.info("Generating level 0 (dictionaries)...")
+                    stats.add(generateTable(pool, "regions", baseCount / 100, config) { batch, count ->
+                        batch.add(arrayOf("Region_${count}"))
+                    })
 
-                conn.commit()
+                    stats.add(generateTable(pool, "suppliers", baseCount / 100, config) { batch, count ->
+                        batch.add(arrayOf("Supplier_${count}"))
+                    })
 
-                // Уровень 1: Основные таблицы (с FK на уровень 0)
-                logger.info("Generating level 1 (main tables)...")
-                
-                val regionIds = getIds(conn, "regions", baseCount / 10)
-                stats.add(generateTable(conn, "users", baseCount, config) { batch, count ->
-                    val email = "user${count}@example.com"
-                    val regionId = regionIds.random()
-                    batch.add(arrayOf(email, regionId))
-                })
+                    stats.add(generateTable(pool, "categories", baseCount / 100, config) { batch, count ->
+                        batch.add(arrayOf("Category_${count}"))
+                    })
 
-                val categoryIds = getIds(conn, "categories")
-                val supplierIds = getIds(conn, "suppliers")
-                stats.add(generateTable(conn, "products", baseCount / 10, config) { batch, count ->
-                    val categoryId = categoryIds.random()
-                    val supplierId = supplierIds.random()
-                    val name = "Product_${count}"
-                    val price = Random.nextDouble(10.0, 10000.0)
-                    batch.add(arrayOf(categoryId, supplierId, name, price))
-                })
+                    stats.add(generateTable(pool, "customers", baseCount / 10, config) { batch, count ->
+                        batch.add(arrayOf("Customer_${count}"))
+                    })
 
-                stats.add(generateTable(conn, "discount_coupons", baseCount / 100, config) { batch, count ->
-                    val code = "COUPON_${count}"
-                    val discount = Random.nextInt(5, 50)
-                    batch.add(arrayOf(code, discount))
-                })
+                    conn.commit()
+                    logConnectionStats("AFTER_LEVEL_0", pool)
 
-                stats.add(generateTable(conn, "marketing_campaigns", baseCount / 1000, config) { batch, count ->
-                    val regionId = regionIds.random()
-                    val name = "Campaign_${count}"
-                    batch.add(arrayOf(regionId, name))
-                })
+                    // Level 1: Main tables
+                    logger.info("Generating level 1 (main tables)...")
 
-                conn.commit()
+                    val regionIds = getIds(pool, "regions", baseCount / 10)
+                    stats.add(generateTable(pool, "users", baseCount, config) { batch, count ->
+                        batch.add(arrayOf("user${count}@example.com", regionIds.random()))
+                    })
 
-                // Уровень 2: Зависимые таблицы
-                logger.info("Generating level 2 (dependent tables)...")
+                    val categoryIds = getIds(pool, "categories")
+                    val supplierIds = getIds(pool, "suppliers")
+                    stats.add(generateTable(pool, "products", baseCount / 10, config) { batch, count ->
+                        batch.add(arrayOf(
+                            categoryIds.random(),
+                            supplierIds.random(),
+                            "Product_${count}",
+                            Random.nextDouble(10.0, 10000.0)
+                        ))
+                    })
 
-                val userIds = getIds(conn, "users", baseCount / 10)
-                stats.add(generateTable(conn, "profiles", baseCount / 2, config) { batch, count ->
-                    val userId = userIds.random()
-                    val bio = "Bio for user $count"
-                    batch.add(arrayOf(userId, bio))
-                })
+                    stats.add(generateTable(pool, "discount_coupons", baseCount / 100, config) { batch, count ->
+                        batch.add(arrayOf("COUPON_${count}", Random.nextInt(5, 50)))
+                    })
 
-                stats.add(generateTable(conn, "user_settings", baseCount / 2, config) { batch, count ->
-                    val userId = userIds.random()
-                    val key = "setting_${count % 100}"
-                    val value = "value_${Random.nextInt(1000)}"
-                    batch.add(arrayOf(userId, key, value))
-                })
+                    stats.add(generateTable(pool, "marketing_campaigns", baseCount / 1000, config) { batch, count ->
+                        batch.add(arrayOf(regionIds.random(), "Campaign_${count}"))
+                    })
 
-                val productIds = getIds(conn, "products", baseCount / 100)
-                stats.add(generateTable(conn, "warehouse_stocks", baseCount / 10, config) { batch, count ->
-                    val productId = productIds.random()
-                    val quantity = Random.nextInt(1, 1000)
-                    batch.add(arrayOf(productId, quantity))
-                })
+                    conn.commit()
+                    logConnectionStats("AFTER_LEVEL_1", pool)
 
-                stats.add(generateTable(conn, "product_reviews", baseCount / 10, config) { batch, count ->
-                    val productId = productIds.random()
-                    val userId = userIds.random()
-                    val rating = Random.nextInt(1, 6)
-                    batch.add(arrayOf(productId, userId, rating))
-                })
+                    // Level 2: Dependent tables
+                    logger.info("Generating level 2 (dependent tables)...")
 
-                stats.add(generateTable(conn, "audit_logs", baseCount, config) { batch, count ->
-                    val userId = userIds.random()
-                    val action = "ACTION_${Random.nextInt(100)}"
-                    batch.add(arrayOf(userId, action))
-                })
+                    val userIds = getIds(pool, "users", baseCount / 10)
+                    stats.add(generateTable(pool, "profiles", baseCount / 2, config) { batch, count ->
+                        batch.add(arrayOf(userIds.random(), "Bio for user $count"))
+                    })
 
-                conn.commit()
+                    stats.add(generateTable(pool, "user_settings", baseCount / 2, config) { batch, count ->
+                        batch.add(arrayOf(userIds.random(), "setting_${count % 100}", "value_${Random.nextInt(1000)}"))
+                    })
 
-                // Уровень 3: Продажи
-                logger.info("Generating level 3 (sales)...")
+                    val productIds = getIds(pool, "products", baseCount / 100)
+                    stats.add(generateTable(pool, "warehouse_stocks", baseCount / 10, config) { batch, count ->
+                        batch.add(arrayOf(productIds.random(), Random.nextInt(1, 1000)))
+                    })
 
-                val customerIds = getIds(conn, "customers")
-                stats.add(generateTable(conn, "orders", baseCount, config) { batch, count ->
-                    val customerId = customerIds.random()
-                    batch.add(arrayOf(customerId))
-                })
+                    stats.add(generateTable(pool, "product_reviews", baseCount / 10, config) { batch, count ->
+                        batch.add(arrayOf(productIds.random(), userIds.random(), Random.nextInt(1, 6)))
+                    })
 
-                val orderIds = getIds(conn, "orders", baseCount / 10)
-                stats.add(generateTable(conn, "order_items", baseCount * 2, config) { batch, count ->
-                    val orderId = orderIds.random()
-                    val productId = productIds.random()
-                    val qty = Random.nextInt(1, 10)
-                    batch.add(arrayOf(orderId, productId, qty))
-                })
+                    stats.add(generateTable(pool, "audit_logs", baseCount, config) { batch, count ->
+                        batch.add(arrayOf(userIds.random(), "ACTION_${Random.nextInt(100)}"))
+                    })
 
-                stats.add(generateTable(conn, "shipments", baseCount / 10, config) { batch, count ->
-                    val orderId = orderIds.random()
-                    val address = "Address ${Random.nextInt(10000)}"
-                    batch.add(arrayOf(orderId, address))
-                })
+                    conn.commit()
+                    logConnectionStats("AFTER_LEVEL_2", pool)
 
-                val couponIds = getIds(conn, "discount_coupons")
-                stats.add(generateTable(conn, "order_coupons", baseCount / 100, config) { batch, count ->
-                    val orderId = orderIds.random()
-                    val couponId = couponIds.random()
-                    batch.add(arrayOf(orderId, couponId))
-                })
+                    // Level 3: Sales
+                    logger.info("Generating level 3 (sales)...")
 
-                val campaignIds = getIds(conn, "marketing_campaigns")
-                stats.add(generateTable(conn, "campaign_stats", baseCount / 1000, config) { batch, count ->
-                    val campaignId = campaignIds.random()
-                    val clicks = Random.nextInt(100, 100000)
-                    batch.add(arrayOf(campaignId, clicks))
-                })
+                    val customerIds = getIds(pool, "customers")
+                    stats.add(generateTable(pool, "orders", baseCount, config) { batch, count ->
+                        batch.add(arrayOf(customerIds.random()))
+                    })
 
-                conn.commit()
+                    val orderIds = getIds(pool, "orders", baseCount / 10)
+                    stats.add(generateTable(pool, "order_items", baseCount * 2, config) { batch, count ->
+                        batch.add(arrayOf(orderIds.random(), productIds.random(), Random.nextInt(1, 10)))
+                    })
 
-                // Уровень 4: Поддержка
-                logger.info("Generating level 4 (support)...")
+                    stats.add(generateTable(pool, "shipments", baseCount / 10, config) { batch, count ->
+                        batch.add(arrayOf(orderIds.random(), "Address ${Random.nextInt(10000)}"))
+                    })
 
-                stats.add(generateTable(conn, "support_tickets", baseCount / 100, config) { batch, count ->
-                    val userId = userIds.random()
-                    val subject = "Ticket subject ${count}"
-                    batch.add(arrayOf(userId, subject))
-                })
+                    val couponIds = getIds(pool, "discount_coupons")
+                    stats.add(generateTable(pool, "order_coupons", baseCount / 100, config) { batch, count ->
+                        batch.add(arrayOf(orderIds.random(), couponIds.random()))
+                    })
 
-                val ticketIds = getIds(conn, "support_tickets")
-                stats.add(generateTable(conn, "ticket_messages", baseCount / 10, config) { batch, count ->
-                    val ticketId = ticketIds.random()
-                    val body = "Message body ${count}"
-                    batch.add(arrayOf(ticketId, body))
-                })
+                    val campaignIds = getIds(pool, "marketing_campaigns")
+                    stats.add(generateTable(pool, "campaign_stats", baseCount / 1000, config) { batch, count ->
+                        batch.add(arrayOf(campaignIds.random(), Random.nextInt(100, 100000)))
+                    })
 
-                conn.commit()
+                    conn.commit()
+                    logConnectionStats("AFTER_LEVEL_3", pool)
 
-                logger.info("Data generation completed successfully")
+                    // Level 4: Support
+                    logger.info("Generating level 4 (support)...")
 
-            } catch (e: Exception) {
-                conn.rollback()
-                logger.error("Data generation failed: ${e.message}", e)
-                throw e
-            } finally {
-                // Возвращаем настройки
-                conn.createStatement().execute("SET synchronous_commit = ON")
-                conn.createStatement().execute("SET commit_delay = 0")
+                    stats.add(generateTable(pool, "support_tickets", baseCount / 100, config) { batch, count ->
+                        batch.add(arrayOf(userIds.random(), "Ticket subject ${count}"))
+                    })
+
+                    val ticketIds = getIds(pool, "support_tickets")
+                    stats.add(generateTable(pool, "ticket_messages", baseCount / 10, config) { batch, count ->
+                        batch.add(arrayOf(ticketIds.random(), "Message body ${count}"))
+                    })
+
+                    conn.commit()
+                    logConnectionStats("AFTER_LEVEL_4", pool)
+
+                    logger.info("Data generation completed successfully")
+
+                } catch (e: Exception) {
+                    conn.rollback()
+                    logger.error("Data generation failed: ${e.message}", e)
+                    throw e
+                } finally {
+                    conn.createStatement().execute("SET synchronous_commit = ON")
+                    conn.createStatement().execute("SET commit_delay = 0")
+                }
             }
+        } finally {
+            logConnectionStats("FINAL", pool)
+            pool.close()
+            logger.info("Connection pool closed")
         }
 
         return stats
     }
 
     /**
-     * Генерация одной таблицы
+     * Generate data for a single table
      */
     private fun generateTable(
-        conn: Connection,
+        pool: HikariDataSource,
         tableName: String,
         count: Int,
         config: GenerationConfig,
@@ -242,30 +245,33 @@ class LargeDataGenerator(
         val batch = mutableListOf<Array<Any>>()
         var inserted = 0L
 
-        val sql = "INSERT INTO $tableName (id, ${getColumns(tableName)}) VALUES (?, ${getPlaceholders(tableName)})"
-        val pstmt = conn.prepareStatement(sql)
+        pool.connection.use { conn ->
+            conn.autoCommit = false
+            val sql = "INSERT INTO $tableName (id, ${getColumns(tableName)}) VALUES (?, ${getPlaceholders(tableName)})"
+            conn.prepareStatement(sql).use { pstmt ->
+                for (i in 1..count) {
+                    rowProvider(batch, i)
 
-        for (i in 1..count) {
-            rowProvider(batch, i)
+                    if (batch.size >= batchSize) {
+                        executeBatch(pstmt, batch)
+                        conn.commit()
+                        inserted += batch.size
+                        batch.clear()
 
-            if (batch.size >= batchSize) {
-                executeBatch(pstmt, batch)
-                inserted += batch.size
-                batch.clear()
+                        if (i % (batchSize * 10) == 0) {
+                            val mxBean = pool.hikariPoolMXBean
+                            println("[CONN] $tableName: $i/$count | active=${activeConnections.get()} | pool_active=${mxBean?.activeConnections} | pool_idle=${mxBean?.idleConnections} | waiting=${mxBean?.threadsAwaitingConnection}")
+                        }
+                    }
+                }
 
-                if (i % (batchSize * 10) == 0) {
-                    logger.debug("$tableName: $i/$count records inserted")
+                if (batch.isNotEmpty()) {
+                    executeBatch(pstmt, batch)
+                    conn.commit()
+                    inserted += batch.size
                 }
             }
         }
-
-        // Последний батч
-        if (batch.isNotEmpty()) {
-            executeBatch(pstmt, batch)
-            inserted += batch.size
-        }
-
-        pstmt.close()
 
         val duration = System.currentTimeMillis() - startTime
         val rowsPerSec = if (duration > 0) inserted * 1000.0 / duration else 0.0
@@ -276,7 +282,7 @@ class LargeDataGenerator(
     }
 
     /**
-     * Выполнение пакета вставок
+     * Execute batch inserts
      */
     private fun executeBatch(pstmt: java.sql.PreparedStatement, batch: List<Array<Any>>) {
         batch.forEach { row ->
@@ -291,7 +297,7 @@ class LargeDataGenerator(
     }
 
     /**
-     * Получение колонок для таблицы
+     * Get column list for a table
      */
     private fun getColumns(tableName: String): String {
         return when (tableName) {
@@ -320,7 +326,7 @@ class LargeDataGenerator(
     }
 
     /**
-     * Получение плейсхолдеров для таблицы
+     * Get placeholders for a table
      */
     private fun getPlaceholders(tableName: String): String {
         val columnCount = getColumns(tableName).split(",").size
@@ -328,9 +334,9 @@ class LargeDataGenerator(
     }
 
     /**
-     * Получение ID из таблицы
+     * Get IDs from a table
      */
-    private fun getIds(conn: Connection, tableName: String, limit: Int? = null): List<UUID> {
+    private fun getIds(pool: HikariDataSource, tableName: String, limit: Int? = null): List<UUID> {
         val ids = mutableListOf<UUID>()
         val sql = if (limit != null) {
             "SELECT id FROM $tableName LIMIT $limit"
@@ -338,10 +344,12 @@ class LargeDataGenerator(
             "SELECT id FROM $tableName"
         }
 
-        conn.createStatement().use { stmt ->
-            val rs = stmt.executeQuery(sql)
-            while (rs.next()) {
-                ids.add(rs.getObject("id") as UUID)
+        pool.connection.use { conn ->
+            conn.createStatement().use { stmt ->
+                val rs = stmt.executeQuery(sql)
+                while (rs.next()) {
+                    ids.add(rs.getObject("id") as UUID)
+                }
             }
         }
 
@@ -350,39 +358,99 @@ class LargeDataGenerator(
     }
 
     /**
-     * Получение соединения с оптимизациями
+     * Create HikariCP connection pool
      */
-    private fun getConnection(config: GenerationConfig): Connection {
-        val url = if (config.rewriteBatchedInserts) {
-            "$jdbcUrl?rewriteBatchedInserts=true"
+    private fun createConnectionPool(config: GenerationConfig): HikariDataSource {
+        // Include credentials in JDBC URL for reliable SCRAM auth
+        val jdbcUrlWithParams = if (config.rewriteBatchedInserts) {
+            "$jdbcUrl?user=$user&password=$password&rewriteBatchedInserts=true"
         } else {
-            jdbcUrl
+            "$jdbcUrl?user=$user&password=$password"
         }
 
-        return DriverManager.getConnection(url, user, password)
+        val hikariConfig = HikariConfig().apply {
+            this.jdbcUrl = jdbcUrlWithParams
+            maximumPoolSize = 3
+            minimumIdle = 1
+            connectionTimeout = 30000
+            idleTimeout = 60000
+            maxLifetime = 1800000
+            validationTimeout = 5000
+            poolName = "data-generator-pool"
+        }
+
+        val pool = HikariDataSource(hikariConfig)
+        logger.info("Connection pool created: maxPoolSize=3, minIdle=1")
+        return pool
     }
 
     /**
-     * Очистка всех таблиц (для повторного тестирования)
+     * Log connection statistics to stdout (visible in Gradle output)
+     */
+    private fun logConnectionStats(phase: String, pool: HikariDataSource) {
+        val mxBean = pool.hikariPoolMXBean
+        val stats = ConnectionStats(
+            totalCreated = totalConnectionsCreated.get(),
+            totalClosed = totalConnectionsClosed.get(),
+            active = activeConnections.get(),
+            peakActive = peakActiveConnections.get(),
+            poolActive = mxBean?.activeConnections ?: -1,
+            poolIdle = mxBean?.idleConnections ?: -1,
+            poolTotal = (mxBean?.activeConnections ?: 0) + (mxBean?.idleConnections ?: 0),
+            poolWaiting = mxBean?.threadsAwaitingConnection ?: 0
+        )
+
+        println(
+            "[CONN_STATS] phase=$phase | " +
+            "created=${stats.totalCreated} | closed=${stats.totalClosed} | " +
+            "active=${stats.active} | peak=${stats.peakActive} | " +
+            "pool_active=${stats.poolActive} | pool_idle=${stats.poolIdle} | " +
+            "pool_total=${stats.poolTotal} | pool_waiting=${stats.poolWaiting}"
+        )
+    }
+
+    /**
+     * Get current connection statistics
+     */
+    fun getConnectionStats(): ConnectionStats {
+        return ConnectionStats(
+            totalCreated = totalConnectionsCreated.get(),
+            totalClosed = totalConnectionsClosed.get(),
+            active = activeConnections.get(),
+            peakActive = peakActiveConnections.get(),
+            poolActive = 0,
+            poolIdle = 0,
+            poolTotal = 0,
+            poolWaiting = 0
+        )
+    }
+
+    /**
+     * Truncate all tables (for re-testing)
      */
     fun truncateAll() {
         logger.info("Truncating all tables...")
 
-        getConnection(GenerationConfig()).use { conn ->
-            // Порядок важен из-за FK
-            val tables = listOf(
-                "ticket_messages", "support_tickets", "campaign_stats", "order_coupons",
-                "shipments", "order_items", "orders", "product_reviews", "audit_logs",
-                "warehouse_stocks", "user_settings", "profiles", "products", "users",
-                "discount_coupons", "marketing_campaigns", "customers", "categories",
-                "suppliers", "regions"
-            )
+        val pool = createConnectionPool(GenerationConfig())
 
-            conn.autoCommit = false
-            tables.forEach { table ->
-                conn.createStatement().execute("TRUNCATE TABLE $table CASCADE")
+        try {
+            pool.connection.use { conn ->
+                val tables = listOf(
+                    "ticket_messages", "support_tickets", "campaign_stats", "order_coupons",
+                    "shipments", "order_items", "orders", "product_reviews", "audit_logs",
+                    "warehouse_stocks", "user_settings", "profiles", "products", "users",
+                    "discount_coupons", "marketing_campaigns", "customers", "categories",
+                    "suppliers", "regions"
+                )
+
+                conn.autoCommit = false
+                tables.forEach { table ->
+                    conn.createStatement().execute("TRUNCATE TABLE $table CASCADE")
+                }
+                conn.commit()
             }
-            conn.commit()
+        } finally {
+            pool.close()
         }
 
         logger.info("All tables truncated")
