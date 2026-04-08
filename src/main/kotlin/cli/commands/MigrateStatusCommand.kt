@@ -1,12 +1,13 @@
 package cli.commands
 
 import com.github.ajalt.mordant.terminal.Terminal
-import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import core.MetadataReader
 import engine.MappingService
+import logging.MetricsService
 import ui.MigrationUi
+import utils.HikariFactory
 
 /**
  * Команда: migrate status
@@ -32,8 +33,8 @@ class MigrateStatusCommand : MigrateCommand(
             ui.printInfo("Source: ${config.sourceJdbcUrl}")
             ui.printInfo("Target: ${config.targetJdbcUrl}")
 
-            sourceDs = createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
-            targetDs = createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
+            sourceDs = HikariFactory.createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
+            targetDs = HikariFactory.createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
 
             // Получение информации о source database
             ui.printSectionTitle("Source Database (UUID)")
@@ -90,21 +91,11 @@ class MigrateStatusCommand : MigrateCommand(
             }
             throw e
         } finally {
+            MetricsService.pushMetrics()
+
             sourceDs?.close()
             targetDs?.close()
         }
-    }
-
-    private fun createDataSource(jdbcUrl: String, user: String, password: String, maxPoolSize: Int): HikariDataSource {
-        return HikariDataSource(HikariConfig().apply {
-            this.jdbcUrl = jdbcUrl
-            this.username = user
-            this.password = password
-            this.maximumPoolSize = maxPoolSize
-            this.minimumIdle = 2
-            this.connectionTimeout = 30000
-            this.validationTimeout = 5000
-        })
     }
 
     private fun getRowCount(ds: HikariDataSource, tableName: String): Long {

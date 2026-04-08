@@ -1,6 +1,5 @@
 package monitoring
 
-import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
@@ -10,7 +9,6 @@ import java.util.concurrent.atomic.AtomicLong
 class PerformanceMonitor {
 
     companion object {
-        private val logger = LoggerFactory.getLogger(PerformanceMonitor::class.java)
         private val instance = PerformanceMonitor()
         
         fun getInstance(): PerformanceMonitor = instance
@@ -141,14 +139,5 @@ class PerformanceMonitor {
         return cpuCores * 2
     }
 
-    fun reset() {
-        trackers.clear()
-    }
 }
 
-/**
- * Extension функции для удобного использования
- */
-fun <T> String.measure(block: () -> T): T {
-    return PerformanceMonitor.getInstance().measure(this, block)
-}

@@ -45,14 +45,19 @@ dependencies {
     // Mordant - консольный UI с цветами и прогресс-барами
     implementation("com.github.ajalt.mordant:mordant:2.7.2")
 
+    // === Observability: Micrometer + Prometheus ===
+    implementation("io.micrometer:micrometer-registry-prometheus:1.14.5")
+
+    implementation("io.prometheus:prometheus-metrics-exporter-pushgateway:1.3.1")
+
     // === Тестовые зависимости ===
     // JUnit 5 - фреймворк для тестирования
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
     testImplementation("org.junit.jupiter:junit-jupiter-params:5.10.0")
 
     // Testcontainers - интеграционные тесты с PostgreSQL
-    testImplementation("org.testcontainers:postgresql:1.19.3")
-    testImplementation("org.testcontainers:junit-jupiter:1.19.3")
+    testImplementation("org.testcontainers:postgresql:1.20.1")
+    testImplementation("org.testcontainers:junit-jupiter:1.20.1")
 
     // AssertJ - fluent assertions для читаемых проверок
     testImplementation("org.assertj:assertj-core:3.24.2")

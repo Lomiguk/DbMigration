@@ -1,6 +1,8 @@
 package engine
 
+import logging.MetricsService
 import logging.logConnectionDetailed
+import utils.HikariFactory
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import javax.sql.DataSource
@@ -14,12 +16,14 @@ class MappingService(
 ) {
 
     private val cache = ConcurrentHashMap<UUID, Long>()
-    
+
     // Кэш для batch операций - уменьшает количество обращений к БД
     private val batchCache = ConcurrentHashMap<String, Map<UUID, Long>>()
 
     init {
         createMappingTable()
+        // Регистрируем Gauge для размера кэша
+        MetricsService.registerMappingCacheSizeSupplier { cache.size }
     }
 
     companion object {
@@ -47,7 +51,7 @@ class MappingService(
      */
     fun preloadTableMapping(tableName: String) {
         if (batchCache.containsKey(tableName)) return
-        
+
         "preload_mapping_$tableName".logConnectionDetailed {
             val mappings = mutableMapOf<UUID, Long>()
             targetDataSource.connection.use { conn ->
@@ -87,7 +91,7 @@ class MappingService(
         if (tableMappings != null) {
             return tableMappings[oldUuid]
         }
-        
+
         // Если не нашли в кэше - это ошибка (данных ещё нет)
         return null
     }
@@ -103,26 +107,13 @@ class MappingService(
                 cache[uuid] = newId
             }
         }
-        
+
         val tableCache = batchCache.getOrPut(tableName) { mutableMapOf() }
         (tableCache as? MutableMap)?.putAll(mappings)
-        
+
         // Сохраняем в БД
         "save_mapping_batch_$tableName".logConnectionDetailed {
-            targetDataSource.connection.use { conn ->
-                conn.autoCommit = false
-                val pstmt = conn.prepareStatement(
-                    "INSERT INTO migration_mapping (table_name, old_uuid, new_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
-                )
-                mappings.forEach { (uuid, newId) ->
-                    pstmt.setString(1, tableName)
-                    pstmt.setObject(2, uuid)
-                    pstmt.setLong(3, newId)
-                    pstmt.addBatch()
-                }
-                pstmt.executeBatch()
-                conn.commit()
-            }
+            HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
         }
     }
 
@@ -131,24 +122,5 @@ class MappingService(
             cache[oldUuid] = newId
         }
     }
-    
-    /**
-     * Статистика кэша
-     */
-    fun getCacheStats(): Map<String, Any> {
-        return mapOf(
-            "cache_size" to cache.size,
-            "cache_limit" to CACHE_SIZE_LIMIT,
-            "cache_usage_percent" to (cache.size.toDouble() / CACHE_SIZE_LIMIT * 100),
-            "table_caches" to batchCache.size
-        )
-    }
-    
-    /**
-     * Очистка кэшей
-     */
-    fun clearCaches() {
-        cache.clear()
-        batchCache.clear()
-    }
+
 }

@@ -4,13 +4,14 @@ import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.mordant.terminal.Terminal
-import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import engine.MappingService
+import logging.MetricsService
 import replication.ReplicationService
 import replication.ReplicationConfig
 import ui.MigrationUi
+import utils.HikariFactory
 
 /**
  * Команда: migrate replicate
@@ -47,8 +48,8 @@ class MigrateReplicateCommand : MigrateCommand(
             ui.printInfo("Slot: $slotName")
             ui.printInfo("Mode: ${if (continuous) "Continuous" else "Delta Sync"}")
 
-            sourceDs = createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
-            targetDs = createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
+            sourceDs = HikariFactory.createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
+            targetDs = HikariFactory.createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
 
             // Инициализация сервиса репликации
             val mappingService = MappingService(targetDs)
@@ -110,21 +111,11 @@ class MigrateReplicateCommand : MigrateCommand(
             }
             throw e
         } finally {
+            MetricsService.pushMetrics()
+
             replicationService?.close()
             sourceDs?.close()
             targetDs?.close()
         }
-    }
-
-    private fun createDataSource(jdbcUrl: String, user: String, password: String, maxPoolSize: Int): HikariDataSource {
-        return HikariDataSource(HikariConfig().apply {
-            this.jdbcUrl = jdbcUrl
-            this.username = user
-            this.password = password
-            this.maximumPoolSize = maxPoolSize
-            this.minimumIdle = 2
-            this.connectionTimeout = 30000
-            this.validationTimeout = 5000
-        })
     }
 }

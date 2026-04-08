@@ -1,17 +1,17 @@
 package cli.commands
 
 import com.github.ajalt.mordant.terminal.Terminal
-import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import core.DependencyResolver
 import core.MetadataReader
 import engine.DataMigrator
-import engine.MappingService
 import engine.MappingServiceFactory
 import engine.MappingStrategy
+import logging.MetricsService
 import sync.ChangeCapture
 import ui.MigrationUi
+import utils.HikariFactory
 import kotlin.system.measureTimeMillis
 
 /**
@@ -38,8 +38,8 @@ class MigrateSyncCommand : MigrateCommand(
             ui.printInfo("Source: ${config.sourceJdbcUrl}")
             ui.printInfo("Target: ${config.targetJdbcUrl}")
 
-            sourceDs = createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
-            targetDs = createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
+            sourceDs = HikariFactory.createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
+            targetDs = HikariFactory.createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
 
             // Получение порядка таблиц
             val reader = MetadataReader(sourceDs)
@@ -72,19 +72,18 @@ class MigrateSyncCommand : MigrateCommand(
 
                 val newCount = mappingService.getAllMappedUuids(table).size
                 val newRows = newCount - skippedBefore
-                val skippedRows = skippedBefore
 
                 totalNewRows += newRows
-                totalSkippedRows += skippedRows
+                totalSkippedRows += skippedBefore
                 totalDuration += duration
 
-                ui.printSyncStatus(table, newRows.toLong(), skippedRows.toLong(), duration)
+                ui.printSyncStatus(table, newRows.toLong(), skippedBefore.toLong(), duration)
             }
 
             // Итоговая сводка
             ui.printSectionTitle("Результаты синхронизации")
-            ui.printSuccess("Новых записей: ${totalNewRows}")
-            ui.printInfo("Пропущено записей: ${totalSkippedRows}")
+            ui.printSuccess("Новых записей: $totalNewRows")
+            ui.printInfo("Пропущено записей: $totalSkippedRows")
             ui.printInfo("Общее время: ${totalDuration}ms")
 
             val avgSpeed = if (totalDuration > 0) {
@@ -100,20 +99,10 @@ class MigrateSyncCommand : MigrateCommand(
             }
             throw e
         } finally {
+            MetricsService.pushMetrics()
+
             sourceDs?.close()
             targetDs?.close()
         }
-    }
-
-    private fun createDataSource(jdbcUrl: String, user: String, password: String, maxPoolSize: Int): HikariDataSource {
-        return HikariDataSource(HikariConfig().apply {
-            this.jdbcUrl = jdbcUrl
-            this.username = user
-            this.password = password
-            this.maximumPoolSize = maxPoolSize
-            this.minimumIdle = 2
-            this.connectionTimeout = 30000
-            this.validationTimeout = 5000
-        })
     }
 }

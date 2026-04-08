@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(C:\\Workspace\\DbMigration/**)",
+      "Read(C:\\Workspace\\DbMigration\\src\\main\\kotlin\\cli\\commands/**)"
+    ]
+  },
+  "$version": 3
+}

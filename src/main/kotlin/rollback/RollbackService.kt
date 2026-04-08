@@ -1,11 +1,8 @@
 package rollback
 
-import core.MetadataReader
-import engine.MappingServiceBase
 import org.slf4j.LoggerFactory
 import state.StateRepository
 import java.sql.Connection
-import java.util.*
 import javax.sql.DataSource
 
 /**
@@ -15,9 +12,7 @@ import javax.sql.DataSource
 class RollbackService(
     private val sourceDataSource: DataSource,
     private val targetDataSource: DataSource,
-    private val mappingService: MappingServiceBase,
-    private val stateRepository: StateRepository,
-    private val metadataReader: MetadataReader
+    private val stateRepository: StateRepository
 ) {
     private val logger = LoggerFactory.getLogger(RollbackService::class.java)
 
@@ -42,7 +37,7 @@ class RollbackService(
 
         try {
             targetDataSource.connection.use { targetConn ->
-                sourceDataSource.connection.use { sourceConn ->
+                sourceDataSource.connection.use { _ ->
                     targetConn.autoCommit = false
 
                     try {
@@ -97,19 +92,7 @@ class RollbackService(
         // Получаем список успешно мигрированных таблиц в обратном порядке
         val completedTables = stateRepository.getCompletedTables(migrationId).reversed()
 
-        logger.info("Tables to rollback: ${completedTables.joinToString(", ")}")
-
-        completedTables.forEach { tableName ->
-            val result = rollbackTable(migrationId, tableName)
-            results.add(result)
-
-            if (!result.success) {
-                logger.error("Rollback failed for $tableName, stopping")
-                return results
-            }
-        }
-
-        return results
+        return rollbackTables(completedTables, migrationId, results)
     }
 
     /**
@@ -131,6 +114,14 @@ class RollbackService(
         // Откатываем все таблицы после указанной (включая её)
         val tablesToRollback = completedTables.subList(tableIndex, completedTables.size).reversed()
 
+        return rollbackTables(tablesToRollback, migrationId, results)
+    }
+
+    private fun rollbackTables(
+        tablesToRollback: List<String>,
+        migrationId: String,
+        results: MutableList<RollbackResult>
+    ): MutableList<RollbackResult> {
         logger.info("Tables to rollback: ${tablesToRollback.joinToString(", ")}")
 
         tablesToRollback.forEach { table ->

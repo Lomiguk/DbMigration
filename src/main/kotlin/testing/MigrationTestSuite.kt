@@ -4,17 +4,28 @@ import core.DependencyResolver
 import core.MetadataReader
 import engine.DataMigrator
 import engine.MappingServiceFactory
+import engine.MappingServiceBase
 import engine.MappingStrategy
 import org.slf4j.LoggerFactory
 import rollback.RollbackService
 import state.StateRepository
 import sync.ChangeCapture
 import tools.LargeDataGenerator
-import java.sql.DriverManager
 import java.time.LocalDateTime
 import javax.sql.DataSource
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+
+/**
+ * Контекст миграции — объединяет все компоненты для тестов
+ */
+private data class MigrationContext(
+    val metadataReader: MetadataReader,
+    val mappingService: MappingServiceBase,
+    val migrator: DataMigrator,
+    val tables: List<String>,
+    val migrationOrder: List<String>
+)
 
 /**
  * Комплексное тестирование системы миграции на реальных данных
@@ -24,6 +35,10 @@ class MigrationTestSuite(
     private val targetDs: DataSource
 ) {
     private val logger = LoggerFactory.getLogger(MigrationTestSuite::class.java)
+
+    companion object {
+        private const val CACHE_LIMIT = 10_000_000
+    }
 
     /**
      * Результаты теста
@@ -35,6 +50,31 @@ class MigrationTestSuite(
         val metrics: Map<String, Any>,
         val errorMessage: String? = null
     )
+
+    /**
+     * Создание контекста миграции (читатель, маппинг, мигратор, порядок таблиц)
+     */
+    private fun createMigrationContext(
+        stateRepository: StateRepository? = null,
+        migrationId: String? = null
+    ): MigrationContext {
+        val metadataReader = MetadataReader(sourceDs)
+        val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, CACHE_LIMIT)
+        val migrator = if (stateRepository != null && migrationId != null) {
+            DataMigrator(sourceDs, targetDs, mappingService, metadataReader, stateRepository, migrationId)
+        } else {
+            DataMigrator(sourceDs, targetDs, mappingService, metadataReader)
+        }
+
+        val tables = metadataReader.getAllTablesWithUuidPk()
+        val relations = metadataReader.getForeignKeys()
+
+        val resolver = DependencyResolver()
+        resolver.buildGraph(tables, relations)
+        val migrationOrder = resolver.getMigrationOrder()
+
+        return MigrationContext(metadataReader, mappingService, migrator, tables, migrationOrder)
+    }
 
     /**
      * Запуск всех тестов
@@ -136,27 +176,18 @@ class MigrationTestSuite(
         logger.info("Generated $totalGenerated total records")
 
         // Миграция
-        val metadataReader = MetadataReader(sourceDs)
-        val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, 10_000_000)
-        val migrator = DataMigrator(sourceDs, targetDs, mappingService, metadataReader)
-
-        val tables = metadataReader.getAllTablesWithUuidPk()
-        val relations = metadataReader.getForeignKeys()
-
-        val resolver = DependencyResolver()
-        resolver.buildGraph(tables, relations)
-        val migrationOrder = resolver.getMigrationOrder()
+        val ctx = createMigrationContext()
 
         // Создание целевой схемы
         logger.info("Creating target schema...")
-        migrator.createTargetSchema(migrationOrder)
+        ctx.migrator.createTargetSchema(ctx.migrationOrder)
 
-        logger.info("Starting migration of ${tables.size} tables")
+        logger.info("Starting migration of ${ctx.tables.size} tables")
 
         val migrationStats = mutableListOf<Map<String, Any>>()
-        migrationOrder.forEach { table ->
+        ctx.migrationOrder.forEach { table ->
             val start = System.currentTimeMillis()
-            migrator.migrateTable(table)
+            ctx.migrator.migrateTable(table)
             val duration = System.currentTimeMillis() - start
 
             val rowCount = getRowCount(targetDs, table)
@@ -177,7 +208,7 @@ class MigrationTestSuite(
         return mapOf(
             "total_generated" to totalGenerated,
             "total_migrated" to totalMigrated,
-            "tables_migrated" to tables.size,
+            "tables_migrated" to ctx.tables.size,
             "success" to success,
             "table_stats" to migrationStats
         )
@@ -205,24 +236,15 @@ class MigrationTestSuite(
         // Миграция с замером времени
         val startTime = System.currentTimeMillis()
 
-        val metadataReader = MetadataReader(sourceDs)
-        val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, 10_000_000)
-        val migrator = DataMigrator(sourceDs, targetDs, mappingService, metadataReader)
-
-        val tables = metadataReader.getAllTablesWithUuidPk()
-        val relations = metadataReader.getForeignKeys()
-
-        val resolver = DependencyResolver()
-        resolver.buildGraph(tables, relations)
-        val migrationOrder = resolver.getMigrationOrder()
+        val ctx = createMigrationContext()
 
         // Создание целевой схемы
         logger.info("Creating target schema...")
-        migrator.createTargetSchema(migrationOrder)
+        ctx.migrator.createTargetSchema(ctx.migrationOrder)
 
         var totalRows = 0L
-        migrationOrder.forEach { table ->
-            migrator.migrateTable(table)
+        ctx.migrationOrder.forEach { table ->
+            ctx.migrator.migrateTable(table)
             totalRows += getRowCount(targetDs, table)
         }
 
@@ -256,32 +278,23 @@ class MigrationTestSuite(
     private fun testDeltaSync(newRecordCount: Int): Map<String, Any> {
         logger.info("TEST 3: Delta Sync Test ($newRecordCount new records)")
 
-        val metadataReader = MetadataReader(sourceDs)
-        val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, 10_000_000)
-        val migrator = DataMigrator(sourceDs, targetDs, mappingService, metadataReader)
-
-        val tables = metadataReader.getAllTablesWithUuidPk()
-        val relations = metadataReader.getForeignKeys()
-
-        val resolver = DependencyResolver()
-        resolver.buildGraph(tables, relations)
-        val migrationOrder = resolver.getMigrationOrder()
+        val ctx = createMigrationContext()
 
         // Создание целевой схемы если пуста
         val targetCount = getRowCount(targetDs, "users")
         if (targetCount == 0L) {
             logger.info("Creating target schema for delta sync test...")
-            migrator.createTargetSchema(migrationOrder)
-            
+            ctx.migrator.createTargetSchema(ctx.migrationOrder)
+
             // Первичная миграция
             logger.info("Performing initial migration for delta sync test...")
-            migrationOrder.forEach { table ->
-                migrator.migrateTable(table)
+            ctx.migrationOrder.forEach { table ->
+                ctx.migrator.migrateTable(table)
             }
         }
 
         // Получаем количество до синхронизации
-        val beforeCounts = tables.associateWith { getRowCount(targetDs, it) }
+        val beforeCounts = ctx.tables.associateWith { getRowCount(targetDs, it) }
 
         // Генерируем новые данные
         val generator = LargeDataGenerator(sourceDs.unwrapConnection())
@@ -294,14 +307,14 @@ class MigrationTestSuite(
 
         // Синхронизация
         val syncStart = System.currentTimeMillis()
-        val syncEngine = ChangeCapture(migrator, mappingService)
-        syncEngine.syncUpdates(migrationOrder)
+        val syncEngine = ChangeCapture(ctx.migrator, ctx.mappingService)
+        syncEngine.syncUpdates(ctx.migrationOrder)
 
         val syncDuration = System.currentTimeMillis() - syncStart
 
         // Проверяем что новые данные синхронизированы
-        val afterCounts = tables.associateWith { getRowCount(targetDs, it) }
-        val syncedRows = tables.sumOf { afterCounts[it]!! - beforeCounts[it]!! }
+        val afterCounts = ctx.tables.associateWith { getRowCount(targetDs, it) }
+        val syncedRows = ctx.tables.sumOf { afterCounts[it]!! - beforeCounts[it]!! }
 
         val syncOk = syncedRows >= totalNew * 0.9  // 90% новых записей
 
@@ -332,32 +345,22 @@ class MigrationTestSuite(
         val stateRepository = StateRepository(targetDs)
         val migrationId = "test_resume_${LocalDateTime.now().toString().replace(Regex("[^0-9]"), "")}"
 
-        val metadataReader = MetadataReader(sourceDs)
-        val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, 10_000_000)
-
-        val tables = metadataReader.getAllTablesWithUuidPk()
-        val relations = metadataReader.getForeignKeys()
-
-        val resolver = DependencyResolver()
-        resolver.buildGraph(tables, relations)
-        val migrationOrder = resolver.getMigrationOrder()
+        val ctx = createMigrationContext(stateRepository, migrationId)
 
         // Инициализируем миграцию
-        stateRepository.initMigration(migrationId, migrationOrder, "source", "target")
+        stateRepository.initMigration(migrationId, ctx.tables, "source", "target")
 
         // Мигрируем только половину таблиц
-        val halfwayPoint = migrationOrder.size / 2
-        val firstHalf = migrationOrder.take(halfwayPoint)
-        val secondHalf = migrationOrder.drop(halfwayPoint)
+        val halfwayPoint = ctx.migrationOrder.size / 2
+        val firstHalf = ctx.migrationOrder.take(halfwayPoint)
+        val secondHalf = ctx.migrationOrder.drop(halfwayPoint)
 
         logger.info("Simulating interruption after ${firstHalf.size} tables")
-
-        val migrator = DataMigrator(sourceDs, targetDs, mappingService, metadataReader, stateRepository, migrationId)
 
         // Первая "волна" (эмуляция прерывания)
         var migratedInFirstWave = 0L
         firstHalf.forEach { table ->
-            migrator.migrateTable(table)
+            ctx.migrator.migrateTable(table)
             migratedInFirstWave += getRowCount(targetDs, table)
         }
 
@@ -367,7 +370,7 @@ class MigrationTestSuite(
         // Вторая "волна"
         var migratedInSecondWave = 0L
         secondHalf.forEach { table ->
-            migrator.migrateTable(table)
+            ctx.migrator.migrateTable(table)
             migratedInSecondWave += getRowCount(targetDs, table)
         }
 
@@ -375,7 +378,7 @@ class MigrationTestSuite(
         val resumeOk = migratedInSecondWave > 0
 
         return mapOf(
-            "total_tables" to tables.size,
+            "total_tables" to ctx.tables.size,
             "tables_first_wave" to firstHalf.size,
             "tables_second_wave" to secondHalf.size,
             "rows_first_wave" to migratedInFirstWave,
@@ -400,37 +403,28 @@ class MigrationTestSuite(
         )
 
         // Полная миграция
-        val metadataReader = MetadataReader(sourceDs)
-        val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, 10_000_000)
-        val migrator = DataMigrator(sourceDs, targetDs, mappingService, metadataReader)
-
-        val tables = metadataReader.getAllTablesWithUuidPk()
-        val relations = metadataReader.getForeignKeys()
-
-        val resolver = DependencyResolver()
-        resolver.buildGraph(tables, relations)
-        val migrationOrder = resolver.getMigrationOrder()
+        val ctx = createMigrationContext()
 
         logger.info("Performing full migration before rollback")
-        migrationOrder.forEach { table ->
-            migrator.migrateTable(table)
+        ctx.migrationOrder.forEach { table ->
+            ctx.migrator.migrateTable(table)
         }
 
-        val beforeRollback = tables.associateWith { getRowCount(targetDs, it) }
+        val beforeRollback = ctx.tables.associateWith { getRowCount(targetDs, it) }
         val totalBefore = beforeRollback.values.sum()
 
         logger.info("Migrated $totalBefore total records")
 
         // Rollback половины таблиц
-        val halfwayPoint = migrationOrder.size / 2
-        val tablesToRollback = migrationOrder.take(halfwayPoint)
+        val halfwayPoint = ctx.migrationOrder.size / 2
+        val tablesToRollback = ctx.migrationOrder.take(halfwayPoint)
 
         logger.info("Rolling back ${tablesToRollback.size} tables")
 
         val stateRepository = StateRepository(targetDs)
         val migrationId = stateRepository.getLastActiveMigration()!!
 
-        val rollbackService = RollbackService(sourceDs, targetDs, mappingService, stateRepository, metadataReader)
+        val rollbackService = RollbackService(sourceDs, targetDs, stateRepository)
 
         val rollbackStart = System.currentTimeMillis()
         val rollbackResults = tablesToRollback.map { table ->
@@ -448,7 +442,7 @@ class MigrationTestSuite(
         val validationOk = validationResults.all { it.isValid }
 
         // Проверка что остались только не-откатанные таблицы
-        val afterRollback = tables.associateWith { getRowCount(targetDs, it) }
+        val afterRollback = ctx.tables.associateWith { getRowCount(targetDs, it) }
         val totalAfter = afterRollback.values.sum()
 
         val rollbackOk = totalAfter == (totalBefore - totalRolledBack)
@@ -516,16 +510,16 @@ fun main() {
 
     val testSuite = MigrationTestSuite(sourceDs, targetDs)
 
-    println("╔═══════════════════════════════════════════════════════════╗")
-    println("║   Comprehensive Migration Test Suite                      ║")
-    println("╚═══════════════════════════════════════════════════════════╝")
+    println("=============================================================")
+    println("|   Comprehensive Migration Test Suite                      |")
+    println("=============================================================")
 
     val results = testSuite.runAllTests(recordCount = 1_000_000)
 
     println()
-    println("═══════════════════════════════════════════════════════════")
+    println("=============================================================")
     println("TEST RESULTS SUMMARY")
-    println("═══════════════════════════════════════════════════════════")
+    println("=============================================================")
 
     results.forEach { result ->
         val status = if (result.success) "✓ PASSED" else "✗ FAILED"
@@ -537,7 +531,7 @@ fun main() {
 
     val passed = results.count { it.success }
     val total = results.size
-    println("═══════════════════════════════════════════════════════════")
+    println("=============================================================")
     println("Total: $passed/$total tests passed")
 
     sourceDs.close()

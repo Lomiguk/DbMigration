@@ -1,6 +1,7 @@
 package engine
 
 import core.MetadataReader
+import logging.MetricsService
 import logging.PerformanceLogger
 import state.StateRepository
 import java.sql.PreparedStatement
@@ -38,6 +39,122 @@ class DataMigrator(
         }
     }
 
+    /**
+     * Перенос индексов из source в target.
+     * Анализирует реальные индексы source БД и воссоздаёт их в target,
+     * автоматически заменяя UUID-типы на BIGINT.
+     *
+     * Это безопаснее, чем слепое создание индексов на FK:
+     * переносятся только те индексы, которые реально существуют в source.
+     */
+    fun migrateIndexes(tables: List<String>) {
+        println(">>> Перенос индексов из source в target...")
+
+        sourceDataSource.connection.use { sourceConn ->
+            targetDataSource.connection.use { targetConn ->
+
+                tables.forEach { tableName ->
+                    val indexes = getSourceIndexes(sourceConn, tableName)
+
+                    indexes.forEach { idx ->
+                        val indexName = idx.name.replace("${tableName}_pkey", "${tableName}_pkey") // PK не трогаем — уже создан
+                        if (idx.isPrimary) return@forEach // PK уже создан через BIGSERIAL PRIMARY KEY
+
+                        val columnsStr = idx.columns.joinToString(", ") { col ->
+                            // Если колонка = id, она уже BIGINT; иначе — просто имя
+                            col
+                        }
+
+                        val uniqueKeyword = if (idx.isUnique) "UNIQUE " else ""
+                        val whereClause = if (idx.predicate != null) " WHERE ${idx.predicate}" else ""
+
+                        val createIndexSql = "CREATE ${uniqueKeyword}INDEX IF NOT EXISTS $indexName ON $tableName ($columnsStr)$whereClause"
+                        targetConn.createStatement().execute(createIndexSql)
+                        println("  [+] Index: $indexName (${if (idx.isUnique) "UNIQUE" else "NON-UNIQUE"}) → $columnsStr")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Опциональное создание индексов на всех FK-колонках.
+     * Не рекомендуется как базовая практика — используйте migrateIndexes() для
+     * точного переноса реальной индексной схемы из source.
+     */
+    fun createForeignKeyIndexes(tables: List<String>) {
+        println(">>> Создание FK-индексов в целевой схеме (опционально)...")
+        targetDataSource.connection.use { targetConn ->
+            tables.forEach { tableName ->
+                val foreignKeys = metadataReader.getForeignKeysForTable(tableName)
+                foreignKeys.forEach { fk ->
+                    val indexName = "idx_${tableName}_${fk.columnName}"
+                    val createIndexSql = "CREATE INDEX IF NOT EXISTS $indexName ON $tableName (${fk.columnName})"
+                    targetConn.createStatement().execute(createIndexSql)
+                    println("  [+] FK Index: $indexName")
+                }
+            }
+        }
+    }
+
+    /**
+     * Получает информацию об индексах из source БД.
+     */
+    private data class IndexInfo(
+        val name: String,
+        val columns: List<String>,
+        val isUnique: Boolean,
+        val isPrimary: Boolean,
+        val predicate: String? = null  // WHERE clause для partial indexes
+    )
+
+    private fun getSourceIndexes(conn: java.sql.Connection, tableName: String): List<IndexInfo> {
+        val indexes = mutableListOf<IndexInfo>()
+
+        // Запрос к pg_catalog для получения полной информации об индексах
+        val sql = """
+            SELECT
+                i.relname AS index_name,
+                ix.indisunique AS is_unique,
+                ix.indisprimary AS is_primary,
+                array_agg(a.attname ORDER BY array_position(ix.indkey, a.attnum)) AS columns,
+                pg_get_expr(ix.indpred, ix.indrelid) AS predicate
+            FROM pg_index ix
+            JOIN pg_class t ON t.oid = ix.indrelid
+            JOIN pg_class i ON i.oid = ix.indexrelid
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
+            WHERE t.relname = ? AND t.relnamespace = 'public'::regnamespace
+            GROUP BY i.relname, ix.indisunique, ix.indisprimary, ix.indpred, ix.indkey, ix.indrelid
+            ORDER BY i.relname
+        """.trimIndent()
+
+        val pstmt = conn.prepareStatement(sql)
+        pstmt.setString(1, tableName)
+        val rs = pstmt.executeQuery()
+
+        while (rs.next()) {
+            val columnsArray = rs.getArray("columns")
+            val columnsList = if (columnsArray != null) {
+                @Suppress("UNCHECKED_CAST")
+                (columnsArray.array as Array<String>).toList()
+            } else {
+                emptyList()
+            }
+
+            indexes.add(
+                IndexInfo(
+                    name = rs.getString("index_name"),
+                    columns = columnsList,
+                    isUnique = rs.getBoolean("is_unique"),
+                    isPrimary = rs.getBoolean("is_primary"),
+                    predicate = rs.getString("predicate")
+                )
+            )
+        }
+
+        return indexes
+    }
+
     fun migrateTable(tableName: String, existingIds: Set<UUID> = emptySet()) {
         // Инициализация логирования для этой таблицы
         PerformanceLogger.startTable(tableName)
@@ -55,7 +172,13 @@ class DataMigrator(
             targetDataSource.connection.use { targetConn ->
                 targetConn.autoCommit = false
 
-                val rs = sourceConn.createStatement().executeQuery("SELECT * FROM $tableName ORDER BY id")
+                sourceConn.autoCommit = false
+
+                val stmt = sourceConn.createStatement()
+                // Загружать в RAM только по 5000 строк за раз
+                stmt.fetchSize = 5000
+
+                val rs = stmt.executeQuery("SELECT * FROM $tableName ORDER BY id")
 
                 val placeholders = columns.joinToString(", ") { "?" }
                 val sql = "INSERT INTO $tableName (${columns.joinToString(", ")}) VALUES ($placeholders)"
@@ -140,10 +263,12 @@ class DataMigrator(
     ) {
         val batchStart = System.currentTimeMillis()
 
-        // Замер INSERT
-        val insertStart = System.currentTimeMillis()
-        preparedStatement.executeBatch()
-        val insertDuration = System.currentTimeMillis() - insertStart
+        // Замер INSERT через Micrometer Timer
+        val insertTimer = MetricsService.getMigrationBatchTimer(tableName, "insert")
+        val insertDuration = insertTimer.recordCallable<Long> {
+            preparedStatement.executeBatch()
+            System.currentTimeMillis() - batchStart
+        }!!
 
         // Замер generated keys
         val generatedKeys = preparedStatement.generatedKeys
@@ -158,14 +283,20 @@ class DataMigrator(
             mappingService.saveMappingInMemory(oldUuid, newId)
         }
 
-        // Замер MAPPING
-        val mappingStart = System.currentTimeMillis()
-        mappingService.saveMappingBatch(tableName, batchMappings)
-        val mappingDuration = System.currentTimeMillis() - mappingStart
+        // Замер MAPPING через Micrometer Timer
+        val mappingTimer = MetricsService.getMigrationBatchTimer(tableName, "mapping")
+        val mappingDuration = mappingTimer.recordCallable<Long> {
+            mappingService.saveMappingBatch(tableName, batchMappings)
+            System.currentTimeMillis() - batchStart
+        }!!
 
         val totalBatchDuration = System.currentTimeMillis() - batchStart
 
-        // Логирование метрик
+        // Increment counter для успешно мигрированных строк
+        val rowsCounter = MetricsService.getMigrationRowsCounter(tableName)
+        rowsCounter.increment(oldUuids.size.toDouble())
+
+        // Логирование метрик (legacy CSV — deprecated)
         PerformanceLogger.logBatch(
             tableName = tableName,
             batchNumber = batchNumber,

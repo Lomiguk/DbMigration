@@ -1,7 +1,8 @@
 package cli.commands
 
+import com.github.ajalt.clikt.parameters.options.flag
+import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.mordant.terminal.Terminal
-import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import core.DependencyResolver
@@ -9,7 +10,9 @@ import core.MetadataReader
 import engine.DataMigrator
 import engine.MappingServiceFactory
 import engine.MappingStrategy
+import logging.MetricsService
 import ui.MigrationUi
+import utils.HikariFactory
 import kotlin.system.measureTimeMillis
 
 /**
@@ -23,6 +26,14 @@ class MigrateCopyCommand : MigrateCommand(
 
     private val terminal = Terminal()
     private val ui = MigrationUi(terminal)
+
+    // Перенос реальной индексной схемы из source (рекомендуемый способ)
+    private val migrateIndexes by option("--migrate-indexes", "-mi",
+        help = "Перенести индексы из source в target (анализ pg_catalog, замена UUID→BIGINT)").flag()
+
+    // Опциональное создание индексов на всех FK-колонках (не рекомендуется как базовая практика)
+    private val createFkIndexes by option("--create-fk-indexes",
+        help = "Создать индексы на всех FK-колонках (опционально, не рекомендуется)").flag()
 
     override fun run() {
         val config = buildConfig()
@@ -40,8 +51,8 @@ class MigrateCopyCommand : MigrateCommand(
             ui.printInfo("Source: ${config.sourceJdbcUrl}")
             ui.printInfo("Target: ${config.targetJdbcUrl}")
 
-            sourceDs = createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
-            targetDs = createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
+            sourceDs = HikariFactory.createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
+            targetDs = HikariFactory.createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
 
             // Анализ схемы
             ui.printInfo("Анализ схемы source database...")
@@ -78,6 +89,21 @@ class MigrateCopyCommand : MigrateCommand(
             if (!config.dryRun) {
                 migrator.createTargetSchema(migrationOrder)
                 ui.printSuccess("Целевая схема создана")
+
+                // Перенос индексов (по умолчанию выключен — явный выбор)
+                when {
+                    migrateIndexes -> {
+                        migrator.migrateIndexes(migrationOrder)
+                        ui.printSuccess("Индексы перенесены из source")
+                    }
+                    createFkIndexes -> {
+                        migrator.createForeignKeyIndexes(migrationOrder)
+                        ui.printSuccess("FK-индексы созданы")
+                    }
+                    else -> {
+                        ui.printInfo("Индексы не переносятся. Используйте --migrate-indexes для переноса из source или --create-fk-indexes для создания на FK.")
+                    }
+                }
             }
 
             // Миграция данных
@@ -124,21 +150,16 @@ class MigrateCopyCommand : MigrateCommand(
             )
             throw e
         } finally {
+            // Отправляем последние метрики в Grafana
+            MetricsService.pushMetrics()
+
+            // Сбрасываем буферы CSV и сохраняем файлы на диск
+            logging.PerformanceLogger.finish()
+
+            // Закрываем пулы соединений
             sourceDs?.close()
             targetDs?.close()
         }
-    }
-
-    private fun createDataSource(jdbcUrl: String, user: String, password: String, maxPoolSize: Int): HikariDataSource {
-        return HikariDataSource(HikariConfig().apply {
-            this.jdbcUrl = jdbcUrl
-            this.username = user
-            this.password = password
-            this.maximumPoolSize = maxPoolSize
-            this.minimumIdle = 2
-            this.connectionTimeout = 30000
-            this.validationTimeout = 5000
-        })
     }
 
     private fun getRowCount(ds: HikariDataSource, tableName: String): Long {

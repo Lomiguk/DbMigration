@@ -3,11 +3,9 @@ package tools
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.slf4j.LoggerFactory
-import java.sql.Connection
 import java.util.*
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.max
 import kotlin.random.Random
 
 /**
@@ -110,7 +108,7 @@ class LargeDataGenerator(
 
                     val regionIds = getIds(pool, "regions", baseCount / 10)
                     stats.add(generateTable(pool, "users", baseCount, config) { batch, count ->
-                        batch.add(arrayOf("user${count}@example.com", regionIds.random()))
+                        batch.add(arrayOf("user${count}_${Random.nextInt(Int.MAX_VALUE)}@example.com", regionIds.random()))
                     })
 
                     val categoryIds = getIds(pool, "categories")
@@ -125,7 +123,7 @@ class LargeDataGenerator(
                     })
 
                     stats.add(generateTable(pool, "discount_coupons", baseCount / 100, config) { batch, count ->
-                        batch.add(arrayOf("COUPON_${count}", Random.nextInt(5, 50)))
+                        batch.add(arrayOf("COUPON_${count}_${Random.nextInt(10000, 99999)}", Random.nextInt(5, 50)))
                     })
 
                     stats.add(generateTable(pool, "marketing_campaigns", baseCount / 1000, config) { batch, count ->
@@ -197,12 +195,12 @@ class LargeDataGenerator(
                     logger.info("Generating level 4 (support)...")
 
                     stats.add(generateTable(pool, "support_tickets", baseCount / 100, config) { batch, count ->
-                        batch.add(arrayOf(userIds.random(), "Ticket subject ${count}"))
+                        batch.add(arrayOf(userIds.random(), "Ticket subject $count"))
                     })
 
                     val ticketIds = getIds(pool, "support_tickets")
                     stats.add(generateTable(pool, "ticket_messages", baseCount / 10, config) { batch, count ->
-                        batch.add(arrayOf(ticketIds.random(), "Message body ${count}"))
+                        batch.add(arrayOf(ticketIds.random(), "Message body $count"))
                     })
 
                     conn.commit()
@@ -406,22 +404,6 @@ class LargeDataGenerator(
             "active=${stats.active} | peak=${stats.peakActive} | " +
             "pool_active=${stats.poolActive} | pool_idle=${stats.poolIdle} | " +
             "pool_total=${stats.poolTotal} | pool_waiting=${stats.poolWaiting}"
-        )
-    }
-
-    /**
-     * Get current connection statistics
-     */
-    fun getConnectionStats(): ConnectionStats {
-        return ConnectionStats(
-            totalCreated = totalConnectionsCreated.get(),
-            totalClosed = totalConnectionsClosed.get(),
-            active = activeConnections.get(),
-            peakActive = peakActiveConnections.get(),
-            poolActive = 0,
-            poolIdle = 0,
-            poolTotal = 0,
-            poolWaiting = 0
         )
     }
 

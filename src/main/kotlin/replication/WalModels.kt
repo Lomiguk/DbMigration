@@ -1,8 +1,6 @@
 package replication
 
-import java.nio.ByteBuffer
 import java.time.LocalDateTime
-import java.util.*
 
 /**
  * Событие изменения данных из WAL
@@ -43,20 +41,6 @@ data class WalDeleteEvent(
     override val timestamp: LocalDateTime,
     val oldTuple: Map<String, Any?>
 ) : WalEvent()
-
-/**
- * Состояние репликации
- */
-data class ReplicationState(
-    val slotName: String,
-    val currentLsn: String,
-    val lastAppliedLsn: String,
-    val lagBytes: Long,
-    val isActive: Boolean,
-    val startTime: LocalDateTime? = null,
-    val lastReceiveTime: LocalDateTime? = null,
-    val eventsProcessed: Long = 0
-)
 
 /**
  * Конфигурация репликации

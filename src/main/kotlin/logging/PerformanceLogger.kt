@@ -1,6 +1,5 @@
 package logging
 
-import com.zaxxer.hikari.HikariDataSource
 import org.slf4j.LoggerFactory
 import java.io.FileWriter
 import java.io.PrintWriter
@@ -8,17 +7,20 @@ import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 /**
  * Сборщик ценных метрик производительности
  * Пишет в файлы для последующего анализа
+ *
+ * @deprecated Use [MetricsService] with Prometheus/Grafana instead.
+ *   CSV logging is being phased out in favor of real-time observability.
+ *   Metrics are now collected via Micrometer and exposed at http://localhost:8080/metrics
  */
 object PerformanceLogger {
 
     private val logger = LoggerFactory.getLogger(PerformanceLogger::class.java)
-    private val logDir = "performance_logs"
     private val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss").format(Date())
+    private val runLogDir = "performance_logs/run_$timestamp"
     
     // Основные файлы логов - создаём только при первом использовании
     private var batchLog: PrintWriter? = null
@@ -36,15 +38,15 @@ object PerformanceLogger {
 
     private fun ensureInitialized() {
         if (initialized) return
-        
-        // Создаём директорию
-        java.io.File(logDir).mkdirs()
-        
-        // Заголовки CSV
-        batchLog = PrintWriter(FileWriter("$logDir/batch_performance_$timestamp.csv"))
-        mappingLog = PrintWriter(FileWriter("$logDir/mapping_performance_$timestamp.csv"))
-        poolLog = PrintWriter(FileWriter("$logDir/connection_pool_$timestamp.csv"))
-        summaryLog = PrintWriter(FileWriter("$logDir/summary_$timestamp.txt"))
+
+        // Создаем директорию конкретного запуска
+        java.io.File(runLogDir).mkdirs()
+
+        // Файлы теперь называются просто и понятно, так как они лежат в папке запуска
+        batchLog = PrintWriter(FileWriter("$runLogDir/batch_performance.csv"))
+        mappingLog = PrintWriter(FileWriter("$runLogDir/mapping_performance.csv"))
+        poolLog = PrintWriter(FileWriter("$runLogDir/connection_pool.csv"))
+        summaryLog = PrintWriter(FileWriter("$runLogDir/summary.txt"))
         
         batchLog?.println("timestamp,table,batch_number,records_total,insert_duration_ms,mapping_duration_ms,commit_duration_ms,total_batch_ms,records_per_sec")
         mappingLog?.println("timestamp,table,batch_number,records_saved,mapping_duration_ms,records_per_sec")
@@ -140,25 +142,6 @@ object PerformanceLogger {
     }
 
     /**
-     * Логирование состояния пула соединений
-     */
-    fun logPoolState(
-        tableName: String,
-        active: Int,
-        idle: Int,
-        total: Int,
-        waiting: Int
-    ) {
-        ensureInitialized()
-        
-        val timestamp = System.currentTimeMillis()
-        val elapsed = timestamp - totalStartTime
-
-        poolLog?.println("$elapsed,$tableName,$active,$idle,$total,$waiting")
-        poolLog?.flush()
-    }
-
-    /**
      * Начало миграции таблицы
      */
     fun startTable(tableName: String) {
@@ -207,10 +190,10 @@ object PerformanceLogger {
         scheduler.shutdownNow()
         ensureInitialized()
         
-        summaryLog?.println("\n═══════════════════════════════════════════════════════════")
+        summaryLog?.println("\n===========================================================")
         summaryLog?.println("FINAL SUMMARY")
         summaryLog?.println("Completed: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date())}")
-        summaryLog?.println("═══════════════════════════════════════════════════════════")
+        summaryLog?.println("============================================================")
 
         batchStats.values.forEach { stats ->
             synchronized(stats) {
@@ -228,13 +211,13 @@ object PerformanceLogger {
             }
         }
 
-        summaryLog?.println("\n═══════════════════════════════════════════════════════════")
+        summaryLog?.println("\n============================================================")
         summaryLog?.println("Log files:")
-        summaryLog?.println("  - $logDir/batch_performance_$timestamp.csv")
-        summaryLog?.println("  - $logDir/mapping_performance_$timestamp.csv")
-        summaryLog?.println("  - $logDir/connection_pool_$timestamp.csv")
-        summaryLog?.println("  - $logDir/summary_$timestamp.txt")
-        summaryLog?.println("═══════════════════════════════════════════════════════════")
+        summaryLog?.println("  - $runLogDir/batch_performance.csv")
+        summaryLog?.println("  - $runLogDir/mapping_performance.csv")
+        summaryLog?.println("  - $runLogDir/connection_pool.csv")
+        summaryLog?.println("  - $runLogDir/summary.txt")
+        summaryLog?.println("=============================================================")
 
         // Сбрасываем буферы и закрываем файлы
         batchLog?.flush()
@@ -247,27 +230,7 @@ object PerformanceLogger {
         poolLog?.close()
         summaryLog?.close()
 
-        logger.info("Performance logs written to: $logDir/")
+        logger.info("Performance logs written to: $runLogDir/")
     }
 
-    fun startPoolMonitoring(dataSource: HikariDataSource) {
-        if (isMonitoring) return
-        isMonitoring = true
-
-        val mxBean = dataSource.hikariPoolMXBean
-        if (mxBean != null) {
-            scheduler.scheduleAtFixedRate({
-                try {
-                    val time = System.currentTimeMillis() - totalStartTime
-                    val active = mxBean.activeConnections
-                    val idle = mxBean.idleConnections
-                    val total = mxBean.totalConnections
-                    val waiting = mxBean.threadsAwaitingConnection
-
-                    poolLog?.println("$time,$active,$idle,$total,$waiting")
-                    poolLog?.flush()
-                } catch (e: Exception) { /* Игнорируем ошибки при завершении пула */ }
-            }, 0, 1, TimeUnit.SECONDS) // Собираем метрику каждую секунду
-        }
-    }
 }

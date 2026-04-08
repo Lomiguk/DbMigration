@@ -52,29 +52,62 @@
 | `--verbose` | `-v` | Подробный вывод | false |
 | `--config` | `-cfg` | Путь к конфигу | — |
 
+### Опции команды copy
+
+| Опция | Краткая | Описание | По умолчанию |
+|-------|---------|----------|--------------|
+| `--migrate-indexes` | `-mi` | Перенести индексы из source в target (анализ `pg_catalog`, автоматическая замена UUID→BIGINT) | ❌ |
+| `--create-fk-indexes` | — | Создать индексы на всех FK-колонках (опционально) | ❌ |
+
+### Управление индексами при миграции
+
+По умолчанию команда `copy` создаёт **только таблицы и PRIMARY KEY**. Никакие дополнительные индексы не переносятся — это безопасная практика, позволяющая вам самостоятельно решить, какие индексы нужны.
+
+#### Вариант 1: Перенос реальной индексной схемы (рекомендуется)
+
+```bash
+./gradlew run --args="copy --migrate-indexes"
+```
+
+Анализирует `pg_catalog` source БД и воссоздаёт в target **точно те же индексы**, автоматически заменяя UUID-типы на BIGINT. Переносятся:
+- **UNIQUE** индексы
+- **Составные** (multi-column) индексы
+- **Partial** индексы (с WHERE clause)
+- Пропускаются PRIMARY KEY (уже создан через `BIGSERIAL PRIMARY KEY`)
+
+Это безопасный подход: переносятся только индексы, которые **реально существуют** в production.
+
+#### Вариант 2: Создание индексов на FK (опционально)
+
+```bash
+./gradlew run --args="copy --create-fk-indexes"
+```
+
+Создаёт `idx_<table>_<fk_column>` на каждой FK-колонке. **Не рекомендуется** как базовая практика — используйте только если в source действительно были индексы на этих FK.
+
+#### Вариант 3: Без индексов (по умолчанию)
+
+```bash
+./gradlew run --args="copy"
+```
+
+Только таблицы + PK. Индексы добавляете вручную после миграции по мере необходимости.
+
 ### Примеры использования
 
 ```bash
-# Базовая миграция
+# Базовая миграция (без индексов)
 ./gradlew run --args="init"
 ./gradlew run --args="copy"
-./gradlew run --args="sync"
 
-# Миграция с кастомными параметрами
-./gradlew run --args="copy --batch-size 5000 --max-pool-size 20"
+# Миграция с переносом индексов из source
+./gradlew run --args="copy --migrate-indexes"
+
+# Миграция с кастомными параметрами и индексами
+./gradlew run --args="copy --batch-size 5000 --max-pool-size 20 --migrate-indexes"
 
 # Пробный запуск
 ./gradlew run --args="copy --dry-run --verbose"
-
-# С конфигурационным файлом
-./gradlew run --args="config-init"
-# ... редактируем migration-config.yaml ...
-./gradlew run --args="copy --config migration-config.yaml"
-
-# Генерация тестовых данных
-./gradlew run --args="generate-data"
-./gradlew run --args="generate-data --count 100000"
-./gradlew run --args="generate-data --count 1000000 --truncate"
 ```
 
 ---
@@ -406,12 +439,70 @@ plt.show()
 ### Анализ после миграции
 
 ```powershell
-# Полный цикл с анализом
+# Полный цикл: данные → миграция → delta sync → валидация → статус → анализ
+.\run-migration.ps1 -Count 100000 -Analyze
+```
+
+### Полный цикл миграции через PowerShell-скрипт
+
+Скрипт `run-migration.ps1` автоматизирует весь процесс:
+
+1. Проверка Docker и контейнеров
+2. Генерация тестовых данных (если source пуст)
+3. Первичная миграция (`copy`)
+4. Генерация новых данных (имитация live traffic, 1% от initial)
+5. Delta sync (`sync`)
+6. Валидация целостности (`validate`)
+7. Финальный статус (`status`)
+8. Python-анализ производительности (опционально)
+
+#### Параметры скрипта
+
+| Параметр | Описание | По умолчанию |
+|----------|----------|--------------|
+| `-Count <N>` | Количество базовых записей при генерации | 100000 |
+| `-SkipGenerate` | Пропустить генерацию данных | false |
+| `-SkipSync` | Пропустить delta sync | false |
+| `-SkipValidate` | Пропустить валидацию | false |
+| `-DryRun` | Пробный запуск без изменений | false |
+| `-Analyze` | Запустить Python-анализ после миграции | false |
+| `-MigrateIndexes` | Перенести индексы из source (анализ `pg_catalog`) | ❌ |
+| `-CreateFkIndexes` | Создать индексы на FK-колонках (опционально) | ❌ |
+
+#### Примеры использования
+
+```powershell
+# Быстрый тест (10K, без sync и валидации)
+.\run-migration.ps1 -Count 10000 -SkipSync -SkipValidate
+
+# Полная миграция с анализом производительности
 .\run-migration.ps1 -Count 100000 -Analyze
 
-# Или вручную после миграции
-python analyze-migration.py --charts --json
+# С переносом индексов из source (рекомендуется)
+.\run-migration.ps1 -Count 100000 -MigrateIndexes -Analyze
+
+# С FK-индексами (если в source они были на FK)
+.\run-migration.ps1 -Count 100000 -CreateFkIndexes
+
+# Только copy на существующих данных (без генерации)
+.\run-migration.ps1 -Count 100000 -SkipGenerate -SkipSync -SkipValidate
+
+# Dry run — проверить схему, но не копировать данные
+.\run-migration.ps1 -Count 100000 -DryRun
 ```
+
+#### Управление индексами в скрипте
+
+| Команда | Что происходит с индексами |
+|---------|---------------------------|
+| `.\run-migration.ps1 -Count 100000` | Только таблицы + PK. Без дополнительных индексов. |
+| `.\run-migration.ps1 -Count 100000 -MigrateIndexes` | Анализирует `pg_catalog` source, воссоздаёт те же индексы в target (UUID→BIGINT). **Рекомендуемый вариант.** |
+| `.\run-migration.ps1 -Count 100000 -CreateFkIndexes` | Создаёт `idx_<table>_<fk_column>` на каждом FK. Не рекомендуется как базовая практика. |
+
+В выводе скрипт отобразит примененную стратегию:
+- `Indexes: перенесены из source` (зелёный) — при `-MigrateIndexes`
+- `Indexes: FK-индексы созданы` (жёлтый) — при `-CreateFkIndexes`
+- `Indexes: не переносятся (по умолчанию)` (серый) — без флагов
 
 **Вывод анализатора:**
 - Отчёт по каждой таблице (записи, время, скорость, батчи)

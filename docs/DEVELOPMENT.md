@@ -6,86 +6,48 @@
 
 ## Завершённые этапы
 
-### ✅ Этап 1: CLI-утилита (100%)
+### ✅ Этап 1: CLI-инфраструктура и Движок (100%)
 
-| Задача | Файлы |
+| Задача | Файлы / Компоненты |
 |--------|-------|
-| CLI-фреймворк (Clikt) | `build.gradle.kts` |
-| 5 CLI команд | `cli/commands/*.kt` |
-| Система конфигурации | `config/MigrationConfig.kt` |
+| CLI-фреймворк (Clikt) | `MigrateCli.kt`, `cli/commands/*.kt` |
+| Система конфигурации YAML | `config/MigrationConfig.kt` |
 | Консольный UI (Mordant) | `ui/MigrationUi.kt` |
-| Метрики в реальном времени | Встроено в команды |
+| Анализ метаданных (Constraints) | `core/MetadataReader.kt` |
+| Топологическая сортировка графа | `core/DependencyResolver.kt` |
 
-### ✅ Этап 2: Отказоустойчивость (100%)
+### ✅ Этап 2: Отказоустойчивость и Оптимизация памяти (100%)
 
-| Задача | Файлы |
+| Задача | Файлы / Компоненты |
 |--------|-------|
-| Таблица `migration_state` | `state/StateRepository.kt` |
-| Сохранение прогресса | `engine/DataMigrator.kt` |
-| Resume механизм | `state/MigrationStateManager.kt` |
-| Валидация целостности | `validation/DataIntegrityValidator.kt` |
-| Логирование и retry | `state/MigrationState.kt` |
+| Таблица `migration_state` (Resume) | `state/StateRepository.kt` |
+| Валидация целостности данных | `validation/DataIntegrityValidator.kt` |
+| Предотвращение OOM (Server-side cursors) | `engine/DataMigrator.kt` |
+| Двухуровневый кэш маппинга | `engine/MappingService.kt` |
+| Memory-Filtered Delta Sync | `sync/ChangeCapture.kt` |
 
-### ✅ Этап 3: WAL-репликация (100%)
+### ✅ Этап 3: WAL-репликация (Zero-Downtime CDC) (100%)
 
-| Задача | Файлы |
+| Задача | Файлы / Компоненты |
 |--------|-------|
-| Replication slot | `replication/SlotManager.kt` |
-| Чтение WAL | `replication/WalReader.kt` |
-| Парсинг событий | `replication/WalReader.kt` |
-| Apply изменений | `replication/WalApplier.kt` |
-| Отслеживание lag | `replication/ReplicationService.kt` |
+| Управление Replication slot | `replication/SlotManager.kt` |
+| Настройка Replica Identity | `replication/SlotManager.kt` |
+| Чтение и парсинг WAL (`pgoutput`) | `replication/WalReader.kt`, `WalModels.kt` |
+| In-memory O(1) FK Cache (N+1 Fix) | `replication/WalApplier.kt` |
+| Применение изменений (CDC) | `replication/ReplicationService.kt` |
 
-### ✅ Этап 4: Оптимизация (100%)
+### ✅ Этап 4: Observability и Мониторинг (100%)
 
-| Задача | Статус |
-|--------|--------|
-| HikariCP tuning | ✅ Встроено в config |
-| Code audit & cleanup | ✅ Удалено ~1000 строк |
-| Удаление неиспользуемого кода | ✅ 9 файлов удалено |
+| Задача | Файлы / Компоненты |
+|--------|-------|
+| Интеграция Micrometer + Prometheus | `logging/MetricsService.kt` |
+| Фоновый Pushgateway Daemon | `logging/MetricsService.kt` |
+| Изолированные CSV Audit-логи | `logging/PerformanceLogger.kt` |
+| Grafana Dashboards | `compose.yaml`, `prometheus.yml` |
 
-### ✅ Этап 5: Тестирование (100%)
+---\n
 
-| Задача | Результат |
-|--------|-----------|
-| Unit-тесты | 11 тестов (100% passing) |
-| Integration-тесты | 55 тестов (требуется Docker) |
-| Benchmark-тесты | 6 тестов (требуется Docker) |
-| Документация | `TESTING.md` |
-
----
-
-## Оставшиеся задачи (Этап 6: Production)
-
-| ID | Задача | Описание | Приоритет |
-|----|--------|----------|-----------|
-| 6.1 | Поддержка нескольких СУБД | Абстракция DatabaseProvider (MySQL, MariaDB) | Низкий |
-| 6.2 | Rolling migration | Online миграция без downtime | Средний |
-| 6.3 | REST API | Управление миграцией через HTTP | Низкий |
-| 6.4 | Prometheus metrics | Экспорт метрик, Grafana dashboards | Средний |
-| 6.5 | Rollback механизм | ✅ Уже реализован | — |
-
-**Прогресс Этапа 6:** 1/5 (20%)
-
----
-
-## Удалённые компоненты (очистка кодовой базы)
-
-| Файл | Причина | Строк удалено |
-|------|---------|---------------|
-| `tools/ResultCollector.kt` | Не использовался | ~60 |
-| `tools/RunConfig.kt` | Не использовался | ~60 |
-| `tools/TestDataGenerator.kt` | Не использовался | ~60 |
-| `cache/OptimizedCache.kt` | Не использовался | ~350 |
-| `engine/ParallelMigrator.kt` | Не использовался | ~210 |
-| `engine/DataPrefetcher.kt` | Не использовался | ~222 |
-| `state/MigrationStateManager.kt` | Не использовался | ~144 |
-
-**Итого:** удалено 9 файлов, ~1000 строк кода
-
----
-
-## Текущая структура кода
+## Структура проекта (Архитектура директорий)
 
 ```
 src/main/kotlin/
@@ -132,9 +94,9 @@ src/main/kotlin/
 
 | Проблема | Статус | Приоритет |
 |----------|--------|-----------|
-| WAL replication требует доработки | ⚠️ | Средний |
+| Kubernetes Helm Charts | ⚠️ | Средний |
 | REST API не реализовано | ⚠️ | Низкий |
-| Prometheus metrics не реализовано | ⚠️ | Средний |
+| Поддержка составных (Composite) ключей | ⚠️ | Средний |
 
 ---
 

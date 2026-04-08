@@ -21,7 +21,7 @@ class DetailedConnectionLogger {
         
         fun getInstance(): DetailedConnectionLogger = instance
         
-        val enabled = true
+        const val ENABLED = true
         const val LOG_FILE = "connection_usage.log"
     }
 
@@ -78,7 +78,7 @@ class DetailedConnectionLogger {
      * Логирование начала получения соединения
      */
     fun logAcquireStart(operation: String) {
-        if (!enabled) return
+        if (!ENABLED) return
         
         val event = ConnectionEvent(
             timestamp = System.currentTimeMillis(),
@@ -107,7 +107,7 @@ class DetailedConnectionLogger {
      * Логирование получения соединения
      */
     fun logAcquireEnd(operation: String, waitTimeMs: Long) {
-        if (!enabled) return
+        if (!ENABLED) return
         
         val event = ConnectionEvent(
             timestamp = System.currentTimeMillis(),
@@ -132,7 +132,7 @@ class DetailedConnectionLogger {
      * Логирование освобождения соединения
      */
     fun logRelease(operation: String, durationMs: Long) {
-        if (!enabled) return
+        if (!ENABLED) return
         
         val event = ConnectionEvent(
             timestamp = System.currentTimeMillis(),
@@ -159,34 +159,13 @@ class DetailedConnectionLogger {
     fun <T> executeWithLogging(operation: String, block: () -> T): T {
         val acquireStart = System.currentTimeMillis()
         logAcquireStart(operation)
-        
+
         try {
             val result = block()
-            val duration = System.currentTimeMillis() - acquireStart
-            logAcquireEnd(operation, 0) // Если не было ожидания
+            logAcquireEnd(operation, 0)
             return result
         } finally {
             val duration = System.currentTimeMillis() - acquireStart
-            logRelease(operation, duration)
-        }
-    }
-
-    /**
-     * Выполнение операции с замером времени ожидания
-     */
-    fun <T> executeWithWaitLogging(operation: String, acquireBlock: () -> Unit, block: () -> T): T {
-        val acquireStart = System.currentTimeMillis()
-        logAcquireStart(operation)
-        
-        acquireBlock()
-        val acquireEnd = System.currentTimeMillis()
-        val waitTime = acquireEnd - acquireStart
-        logAcquireEnd(operation, waitTime)
-        
-        try {
-            return block()
-        } finally {
-            val duration = System.currentTimeMillis() - acquireEnd
             logRelease(operation, duration)
         }
     }
@@ -354,13 +333,6 @@ class DetailedConnectionLogger {
         }
     }
 
-    fun reset() {
-        trackers.clear()
-        events.clear()
-        writer?.close()
-        writer = PrintWriter(FileWriter(LOG_FILE), true)
-        writeHeader()
-    }
 }
 
 /**
@@ -368,16 +340,4 @@ class DetailedConnectionLogger {
  */
 fun <T> String.logConnectionDetailed(block: () -> T): T {
     return DetailedConnectionLogger.getInstance().executeWithLogging(this, block)
-}
-
-fun logConnectionAcquireStart(operation: String) {
-    DetailedConnectionLogger.getInstance().logAcquireStart(operation)
-}
-
-fun logConnectionAcquireEnd(operation: String, waitTimeMs: Long) {
-    DetailedConnectionLogger.getInstance().logAcquireEnd(operation, waitTimeMs)
-}
-
-fun logConnectionRelease(operation: String, durationMs: Long) {
-    DetailedConnectionLogger.getInstance().logRelease(operation, durationMs)
 }

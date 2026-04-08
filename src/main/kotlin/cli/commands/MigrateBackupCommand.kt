@@ -3,11 +3,12 @@ package cli.commands
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.mordant.terminal.Terminal
-import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import backup.DatabaseBackupService
+import logging.MetricsService
 import ui.MigrationUi
+import utils.HikariFactory
 
 /**
  * Команда: migrate backup
@@ -33,7 +34,7 @@ class MigrateBackupCommand : MigrateCommand(
         var sourceDs: HikariDataSource? = null
 
         try {
-            sourceDs = createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
+            sourceDs = HikariFactory.createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
             val backupService = DatabaseBackupService(sourceDs)
 
             when (action.lowercase()) {
@@ -111,19 +112,9 @@ class MigrateBackupCommand : MigrateCommand(
             }
             throw e
         } finally {
+            MetricsService.pushMetrics()
+
             sourceDs?.close()
         }
-    }
-
-    private fun createDataSource(jdbcUrl: String, user: String, password: String, maxPoolSize: Int): HikariDataSource {
-        return HikariDataSource(HikariConfig().apply {
-            this.jdbcUrl = jdbcUrl
-            this.username = user
-            this.password = password
-            this.maximumPoolSize = maxPoolSize
-            this.minimumIdle = 2
-            this.connectionTimeout = 30000
-            this.validationTimeout = 5000
-        })
     }
 }

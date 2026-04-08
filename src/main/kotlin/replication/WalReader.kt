@@ -2,12 +2,9 @@ package replication
 
 import org.postgresql.PGConnection
 import org.postgresql.replication.PGReplicationStream
-import org.postgresql.replication.ReplicationType
 import org.slf4j.LoggerFactory
 import java.nio.ByteBuffer
-import java.sql.Connection
 import java.time.LocalDateTime
-import java.util.*
 import javax.sql.DataSource
 
 /**
@@ -262,8 +259,4 @@ class WalReader(
         logger.info("WAL reader stopped")
     }
 
-    /**
-     * Проверка активности чтения
-     */
-    fun isRunning(): Boolean = isRunning
 }

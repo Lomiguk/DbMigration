@@ -1,12 +1,13 @@
 package cli.commands
 
 import com.github.ajalt.mordant.terminal.Terminal
-import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import core.DependencyResolver
 import core.MetadataReader
+import logging.MetricsService
 import ui.MigrationUi
+import utils.HikariFactory
 
 /**
  * Команда: migrate init
@@ -29,7 +30,7 @@ class MigrateInitCommand : MigrateCommand(
         try {
             // Подключение к source database
             ui.printInfo("Подключение к source database: ${config.sourceJdbcUrl}")
-            sourceDs = createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
+            sourceDs = HikariFactory.createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
 
             // Анализ метаданных
             ui.printInfo("Чтение метаданных схемы...")
@@ -64,19 +65,9 @@ class MigrateInitCommand : MigrateCommand(
             }
             throw e
         } finally {
+            logging.MetricsService.pushMetrics()
+
             sourceDs?.close()
         }
-    }
-
-    private fun createDataSource(jdbcUrl: String, user: String, password: String, maxPoolSize: Int): HikariDataSource {
-        return HikariDataSource(HikariConfig().apply {
-            this.jdbcUrl = jdbcUrl
-            this.username = user
-            this.password = password
-            this.maximumPoolSize = maxPoolSize
-            this.minimumIdle = 2
-            this.connectionTimeout = 30000
-            this.validationTimeout = 5000
-        })
     }
 }

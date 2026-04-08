@@ -1,6 +1,8 @@
 package replication
 
+import core.MetadataReader
 import engine.MappingService
+import logging.MetricsService
 import org.slf4j.LoggerFactory
 import java.time.LocalDateTime
 import javax.sql.DataSource
@@ -20,10 +22,14 @@ class ReplicationService(
     private lateinit var walReader: WalReader
     private lateinit var walApplier: WalApplier
     private lateinit var slotManager: SlotManager
+    private lateinit var metadataReader: MetadataReader
+
 
     private var isRunning = false
     private var eventsProcessed = 0L
     private var lastLsn: String = "0/0"
+
+
 
     /**
      * Инициализация сервиса репликации
@@ -31,9 +37,18 @@ class ReplicationService(
     fun initialize() {
         logger.info("Initializing replication service...")
 
+        metadataReader = MetadataReader(sourceDataSource)
+
         slotManager = SlotManager(sourceDataSource)
+
+        val tables = metadataReader.getAllTablesWithUuidPk()
+        slotManager.setupReplicaIdentity(tables)
+
         walReader = WalReader(sourceDataSource, config)
-        walApplier = WalApplier(targetDataSource, mappingService)
+        walApplier = WalApplier(targetDataSource, mappingService, metadataReader)
+
+        // Регистрируем Gauge для отслеживания replication lag
+        MetricsService.registerReplicationLagSupplier { getLag() }
 
         // Создаём replication slot
         if (!slotManager.slotExists(config.slotName)) {
@@ -75,6 +90,8 @@ class ReplicationService(
                         if (result.success) {
                             eventsProcessed++
                             lastLsn = result.lsn
+                            // Increment counter для примененных WAL событий
+                            MetricsService.replicationEventsAppliedCounter.increment()
                         } else {
                             logger.error("Failed to apply event: ${result.errorMessage}")
                         }
@@ -143,26 +160,6 @@ class ReplicationService(
     }
 
     /**
-     * Получение текущего состояния репликации
-     */
-    fun getReplicationState(): ReplicationState {
-        val currentLsn = slotManager.getCurrentLsn()
-        val lagBytes = slotManager.calculateLag(config.slotName)
-        val slotInfo = slotManager.getSlotInfo(config.slotName)
-
-        return ReplicationState(
-            slotName = config.slotName,
-            currentLsn = currentLsn,
-            lastAppliedLsn = lastLsn,
-            lagBytes = lagBytes,
-            isActive = isRunning,
-            startTime = null,
-            lastReceiveTime = if (eventsProcessed > 0) LocalDateTime.now() else null,
-            eventsProcessed = eventsProcessed
-        )
-    }
-
-    /**
      * Получение lag в байтах
      */
     fun getLag(): Long {
@@ -190,11 +187,6 @@ class ReplicationService(
         walReader.stop()
         logger.info("Replication service stopped. Total events processed: $eventsProcessed")
     }
-
-    /**
-     * Проверка активности репликации
-     */
-    fun isRunning(): Boolean = isRunning
 
     /**
      * Очистка ресурсов

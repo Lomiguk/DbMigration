@@ -15,17 +15,9 @@ class ConnectionUsageLogger {
         private val logger = LoggerFactory.getLogger(ConnectionUsageLogger::class.java)
         private val instance = ConnectionUsageLogger()
         
-        fun getInstance(): ConnectionUsageLogger = instance
-        
         // Включить детальное логирование
         var enabled = true
     }
-
-    data class UsageStats(
-        val operation: String,
-        val count: Long,
-        val activeCount: Int
-    )
 
     private class OperationTracker {
         val count = AtomicLong(0)
@@ -127,23 +119,4 @@ class ConnectionUsageLogger {
             }
         }
     }
-
-    fun reset() {
-        trackers.clear()
-    }
-}
-
-/**
- * Extension функции для удобного использования
- */
-fun <T> String.logConnection(block: () -> T): T {
-    return ConnectionUsageLogger.getInstance().executeWithLogging(this, block)
-}
-
-fun logConnectionAcquired(operation: String, waitTimeMs: Long = 0) {
-    ConnectionUsageLogger.getInstance().logConnectionAcquired(operation, waitTimeMs)
-}
-
-fun logConnectionReleased(operation: String) {
-    ConnectionUsageLogger.getInstance().logConnectionReleased(operation)
 }

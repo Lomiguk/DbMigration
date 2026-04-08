@@ -1,11 +1,12 @@
 package cli.commands
 
 import com.github.ajalt.mordant.terminal.Terminal
-import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import core.MetadataReader
+import logging.MetricsService
 import ui.MigrationUi
+import utils.HikariFactory
 import validation.DataIntegrityValidator
 
 /**
@@ -31,8 +32,8 @@ class MigrateValidateCommand : MigrateCommand(
             ui.printInfo("Source: ${config.sourceJdbcUrl}")
             ui.printInfo("Target: ${config.targetJdbcUrl}")
 
-            sourceDs = createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
-            targetDs = createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
+            sourceDs = HikariFactory.createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
+            targetDs = HikariFactory.createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
 
             // Получение списка таблиц
             val reader = MetadataReader(sourceDs)
@@ -61,8 +62,8 @@ class MigrateValidateCommand : MigrateCommand(
                     if (result.fkViolations.isNotEmpty()) {
                         terminal.println("  FK violations: ${result.fkViolations.size}")
                     }
-                    if (result.missingMappings.isNotEmpty()) {
-                        terminal.println("  Missing mappings: ${result.missingMappings.size}")
+                    if (result.missingMappings > 0) {
+                        terminal.println("  Missing mappings: ${result.missingMappings}")
                     }
                     if (result.errorMessage != null) {
                         terminal.println("  Error: ${result.errorMessage}")
@@ -88,20 +89,10 @@ class MigrateValidateCommand : MigrateCommand(
             }
             throw e
         } finally {
+            MetricsService.pushMetrics()
+
             sourceDs?.close()
             targetDs?.close()
         }
-    }
-
-    private fun createDataSource(jdbcUrl: String, user: String, password: String, maxPoolSize: Int): HikariDataSource {
-        return HikariDataSource(HikariConfig().apply {
-            this.jdbcUrl = jdbcUrl
-            this.username = user
-            this.password = password
-            this.maximumPoolSize = maxPoolSize
-            this.minimumIdle = 2
-            this.connectionTimeout = 30000
-            this.validationTimeout = 5000
-        })
     }
 }

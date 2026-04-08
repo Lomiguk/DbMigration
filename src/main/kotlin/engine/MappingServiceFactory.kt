@@ -1,6 +1,7 @@
 package engine
 
 import org.slf4j.LoggerFactory
+import utils.HikariFactory
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import javax.sql.DataSource
@@ -168,20 +169,7 @@ class EagerMappingService(
         (tableMappings as? MutableMap)?.putAll(mappings)
 
         // Сохраняем в БД
-        targetDataSource.connection.use { conn ->
-            conn.autoCommit = false
-            val pstmt = conn.prepareStatement(
-                "INSERT INTO migration_mapping (table_name, old_uuid, new_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
-            )
-            mappings.forEach { (uuid, newId) ->
-                pstmt.setString(1, tableName)
-                pstmt.setObject(2, uuid)
-                pstmt.setLong(3, newId)
-                pstmt.addBatch()
-            }
-            pstmt.executeBatch()
-            conn.commit()
-        }
+        HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
     }
 
     override fun saveMappingInMemory(oldUuid: UUID, newId: Long) {
@@ -192,7 +180,7 @@ class EagerMappingService(
 
     override fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>, conn: java.sql.Connection) {
         val start = System.currentTimeMillis()
-        
+
         // Обновляем кэши
         mappings.forEach { (uuid, newId) ->
             if (cache.size < cacheLimit) {
@@ -204,19 +192,8 @@ class EagerMappingService(
         (tableMappings as? MutableMap)?.putAll(mappings)
 
         // Сохраняем в БД в текущем соединении - БЕЗ commit!
-        // Используем try-with-resources для автоматического закрытия
-        conn.prepareStatement(
-            "INSERT INTO migration_mapping (table_name, old_uuid, new_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
-        ).use { pstmt ->
-            mappings.forEach { (uuid, newId) ->
-                pstmt.setString(1, tableName)
-                pstmt.setObject(2, uuid)
-                pstmt.setLong(3, newId)
-                pstmt.addBatch()
-            }
-            pstmt.executeBatch()
-        }  // pstmt автоматически закрывается здесь
-        
+        HikariFactory.saveMappingBatchInConnection(conn, tableName, mappings)
+
         val duration = System.currentTimeMillis() - start
         if (duration > 100) {  // Логируем только медленные батчи
             println("  [Mapping] Saved ${mappings.size} mappings in ${duration}ms")
@@ -246,7 +223,6 @@ class LazyMappingService(
     cacheLimit: Int = 1_000_000
 ) : MappingServiceBase(targetDataSource, cacheLimit) {
 
-    private val logger = LoggerFactory.getLogger(LazyMappingService::class.java)
     private val cache = ConcurrentHashMap<UUID, Long>()
 
     init {
@@ -272,23 +248,7 @@ class LazyMappingService(
         cache[oldUuid]?.let { return it }
 
         // Ленивая загрузка из БД
-        targetDataSource.connection.use { conn ->
-            val pstmt = conn.prepareStatement(
-                "SELECT new_id FROM migration_mapping WHERE table_name = ? AND old_uuid = ?"
-            )
-            pstmt.setString(1, tableName)
-            pstmt.setObject(2, oldUuid)
-            val rs = pstmt.executeQuery()
-            if (rs.next()) {
-                val id = rs.getLong("new_id")
-                if (cache.size < cacheLimit) {
-                    cache[oldUuid] = id
-                }
-                return id
-            }
-        }
-
-        return null
+        return HikariFactory.lookupMapping(targetDataSource, tableName, oldUuid, cache, cacheLimit)
     }
 
     override fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>) {
@@ -298,20 +258,7 @@ class LazyMappingService(
             }
         }
 
-        targetDataSource.connection.use { conn ->
-            conn.autoCommit = false
-            val pstmt = conn.prepareStatement(
-                "INSERT INTO migration_mapping (table_name, old_uuid, new_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
-            )
-            mappings.forEach { (uuid, newId) ->
-                pstmt.setString(1, tableName)
-                pstmt.setObject(2, uuid)
-                pstmt.setLong(3, newId)
-                pstmt.addBatch()
-            }
-            pstmt.executeBatch()
-            conn.commit()
-        }
+        HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
     }
 
     override fun saveMappingInMemory(oldUuid: UUID, newId: Long) {
@@ -410,23 +357,7 @@ class HybridMappingService(
         }
 
         // Для остальных - ленивая загрузка
-        targetDataSource.connection.use { conn ->
-            val pstmt = conn.prepareStatement(
-                "SELECT new_id FROM migration_mapping WHERE table_name = ? AND old_uuid = ?"
-            )
-            pstmt.setString(1, tableName)
-            pstmt.setObject(2, oldUuid)
-            val rs = pstmt.executeQuery()
-            if (rs.next()) {
-                val id = rs.getLong("new_id")
-                if (cache.size < cacheLimit) {
-                    cache[oldUuid] = id
-                }
-                return id
-            }
-        }
-
-        return null
+        return HikariFactory.lookupMapping(targetDataSource, tableName, oldUuid, cache, cacheLimit)
     }
 
     override fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>) {
@@ -436,20 +367,7 @@ class HybridMappingService(
             }
         }
 
-        targetDataSource.connection.use { conn ->
-            conn.autoCommit = false
-            val pstmt = conn.prepareStatement(
-                "INSERT INTO migration_mapping (table_name, old_uuid, new_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
-            )
-            mappings.forEach { (uuid, newId) ->
-                pstmt.setString(1, tableName)
-                pstmt.setObject(2, uuid)
-                pstmt.setLong(3, newId)
-                pstmt.addBatch()
-            }
-            pstmt.executeBatch()
-            conn.commit()
-        }
+        HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
     }
 
     override fun saveMappingInMemory(oldUuid: UUID, newId: Long) {

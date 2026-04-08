@@ -1,7 +1,6 @@
 package cli.commands
 
 import com.github.ajalt.mordant.terminal.Terminal
-import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import core.DependencyResolver
@@ -9,6 +8,7 @@ import core.MetadataReader
 import engine.DataMigrator
 import engine.MappingServiceFactory
 import engine.MappingStrategy
+import logging.MetricsService
 import state.StateRepository
 import ui.MigrationUi
 
@@ -30,17 +30,13 @@ class MigrateResumeCommand : MigrateCommand(
 
         var sourceDs: HikariDataSource? = null
         var targetDs: HikariDataSource? = null
+        var stateRepository: StateRepository? = null
 
         try {
-            // Подключение к базам данных
-            ui.printInfo("Source: ${config.sourceJdbcUrl}")
-            ui.printInfo("Target: ${config.targetJdbcUrl}")
-
-            sourceDs = createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
-            targetDs = createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
-
-            // Инициализация репозитория состояния
-            val stateRepository = StateRepository(targetDs)
+            val (src, tgt) = createDataSourcesWithLog(config, ui)
+            sourceDs = src
+            targetDs = tgt
+            stateRepository = StateRepository(targetDs)
 
             // Проверка возможности возобновления
             if (stateRepository.getLastActiveMigration() == null) {
@@ -123,21 +119,11 @@ class MigrateResumeCommand : MigrateCommand(
             }
             throw e
         } finally {
+            MetricsService.pushMetrics()
+
             sourceDs?.close()
             targetDs?.close()
         }
-    }
-
-    private fun createDataSource(jdbcUrl: String, user: String, password: String, maxPoolSize: Int): HikariDataSource {
-        return HikariDataSource(HikariConfig().apply {
-            this.jdbcUrl = jdbcUrl
-            this.username = user
-            this.password = password
-            this.maximumPoolSize = maxPoolSize
-            this.minimumIdle = 2
-            this.connectionTimeout = 30000
-            this.validationTimeout = 5000
-        })
     }
 
     private fun getRowCount(ds: HikariDataSource, tableName: String): Long {

@@ -4,7 +4,11 @@ import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.parameters.options.*
 import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.parameters.types.long
+import com.zaxxer.hikari.HikariDataSource
 import engine.MappingStrategy
+import logging.MetricsService
+import ui.MigrationUi
+import utils.HikariFactory
 import java.io.File
 import java.nio.file.Paths
 
@@ -57,6 +61,13 @@ data class MigrationConfig(
  * Базовый класс для CLI команд с общей конфигурацией
  */
 abstract class MigrateCommand(name: String, help: String) : CliktCommand(name = name, help = help) {
+
+    init {
+        // Инициализация Observability stack при запуске любой команды
+        MetricsService.init()
+        // Register shutdown hook для освобождения порта 8080
+        Runtime.getRuntime().addShutdownHook(Thread { MetricsService.shutdown() })
+    }
 
     // Source database options
     protected val sourceHost by option("--source-host", "-sh", help = "Source database host")
@@ -116,6 +127,25 @@ abstract class MigrateCommand(name: String, help: String) : CliktCommand(name = 
         .default("EAGER")
 
     protected val configFile by option("--config", "-cfg", help = "Path to configuration file")
+
+    /**
+     * Создание пары DataSource (source + target) из конфигурации.
+     */
+    protected fun createDataSources(config: MigrationConfig): Pair<HikariDataSource, HikariDataSource> {
+        return Pair(
+            HikariFactory.createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize),
+            HikariFactory.createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
+        )
+    }
+
+    /**
+     * Вывод информации о подключении и создание DataSource.
+     */
+    protected fun createDataSourcesWithLog(config: MigrationConfig, ui: MigrationUi): Pair<HikariDataSource, HikariDataSource> {
+        ui.printInfo("Source: ${config.sourceJdbcUrl}")
+        ui.printInfo("Target: ${config.targetJdbcUrl}")
+        return createDataSources(config)
+    }
 
     /**
      * Построение конфигурации из CLI аргументов

@@ -105,30 +105,4 @@ class MigrationUi(private val terminal: Terminal = Terminal()) {
         terminal.println("  Duration: ${duration}ms")
     }
 
-    /**
-     * Print progress bar
-     */
-    fun renderProgress(tableName: String, current: Long, total: Long) {
-        val percentage = ((current.toDouble() / total) * 100).roundToInt()
-        val barWidth = 40
-        val filledWidth = ((current.toDouble() / total) * barWidth).roundToInt()
-        val emptyWidth = barWidth - filledWidth
-
-        val bar = "#".repeat(filledWidth) + "-".repeat(emptyWidth)
-        terminal.print("\r[$bar] $percentage% ($current/$total)")
-        if (current >= total) {
-            terminal.println()
-        }
-    }
-
-    /**
-     * Print progress percentage
-     */
-    fun printProgress(message: String, current: Int, total: Int) {
-        val percentage = (current.toDouble() / total * 100).roundToInt()
-        terminal.print("\r$message: $current/$total ($percentage%)")
-        if (current >= total) {
-            terminal.println()
-        }
-    }
 }

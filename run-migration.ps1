@@ -1,15 +1,21 @@
 ﻿# Full Migration Cycle Script
-# Usage: .\run-migration.ps1 [-Count 100000] [-SkipGenerate] [-SkipSync] [-SkipValidate] [-Analyze]
+# Usage: .\run-migration.ps1 [-Count 100000] [-SkipGenerate] [-SkipSync] [-SkipValidate] [-Analyze] [-MigrateIndexes]
 param(
     [int]$Count = 100000,
     [switch]$SkipGenerate,
     [switch]$SkipSync,
     [switch]$SkipValidate,
     [switch]$DryRun,
-    [switch]$Analyze
+    [switch]$Analyze,
+    [switch]$MigrateIndexes,
+    [switch]$CreateFkIndexes,
+    [string]$LogFile = "migration_$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').log"
 )
 
 $ErrorActionPreference = "Stop"
+
+Start-Transcript -Path $LogFile -Append
+Write-Host "[i] Logging to file: $LogFile" -ForegroundColor Cyan
 
 function Run-Command {
     param([string]$CmdArgs, [string]$Label)
@@ -24,7 +30,11 @@ function Run-Command {
     $ErrorActionPreference = "Continue"
 
     # Запускаем команду и перехватываем весь вывод
-    $output = & ./gradlew.bat run --args="$CmdArgs" 2>&1 | Out-String
+    & ./gradlew.bat run --args="$CmdArgs"
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Command failed: $CmdArgs"
+    }
 
     # Возвращаем исходную настройку
     $ErrorActionPreference = $tempErrPref
@@ -46,11 +56,6 @@ function Run-Command {
         # If filter caught nothing, show last 20 lines
         Write-Host "[i] Full output (filter caught nothing):" -ForegroundColor Yellow
         ($output -split "`n" | Select-Object -Last 20) | ForEach-Object { Write-Host $_ }
-    }
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "`n[x] Command failed: migrate $CmdArgs" -ForegroundColor Red
-        throw "Command failed: $CmdArgs"
     }
 }
 
@@ -114,7 +119,18 @@ if (-not $records -or $records -eq 0) {
 # ============================================================
 $copyArgs = "copy"
 if ($DryRun) { $copyArgs += " --dry-run" }
-Run-Command -CmdArgs $copyArgs -Label "STEP 1: Initial Data Migration"
+if ($MigrateIndexes) { $copyArgs += " --migrate-indexes" }
+if ($CreateFkIndexes) { $copyArgs += " --create-fk-indexes" }
+
+if ($MigrateIndexes) {
+    $indexLabel = " + перенос индексов из source"
+} elseif ($CreateFkIndexes) {
+    $indexLabel = " + создание FK-индексов"
+} else {
+    $indexLabel = " (без индексов)"
+}
+
+Run-Command -CmdArgs $copyArgs -Label "STEP 1: Initial Data Migration$indexLabel"
 
 # ============================================================
 # STEP 2: Generate new data in source (simulate live traffic)
@@ -173,9 +189,20 @@ Write-Host "============================================================" -Foreg
 Write-Host ""
 Write-Host "  Source: jdbc:postgresql://localhost:5431/source_db" -ForegroundColor Gray
 Write-Host "  Target: jdbc:postgresql://localhost:5432/target_db" -ForegroundColor Gray
+
+if ($MigrateIndexes) {
+    Write-Host "  Indexes: перенесены из source" -ForegroundColor Green
+} elseif ($CreateFkIndexes) {
+    Write-Host "  Indexes: FK-индексы созданы" -ForegroundColor Yellow
+} else {
+    Write-Host "  Indexes: не переносятся (по умолчанию)" -ForegroundColor Gray
+}
+
 Write-Host ""
 Write-Host "  Next steps:" -ForegroundColor Yellow
 Write-Host "    ./gradlew run --args='status'     - Check status" -ForegroundColor Gray
 Write-Host "    ./gradlew run --args='validate'   - Validate integrity" -ForegroundColor Gray
 Write-Host "    ./gradlew run --args='sync'       - Sync new data" -ForegroundColor Gray
 Write-Host ""
+
+Stop-Transcript

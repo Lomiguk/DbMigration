@@ -13,6 +13,25 @@ class SlotManager(private val dataSource: DataSource) {
     private val logger = LoggerFactory.getLogger(SlotManager::class.java)
 
     /**
+     * Гарантирует, что WAL будет содержать старые значения всех колонок
+     * при UPDATE и DELETE операциях. Это критически важно для маппинга UUID -> BIGINT.
+     */
+    fun setupReplicaIdentity(tables: List<String>) {
+        logger.info("Configuring REPLICA IDENTITY FULL for replicated tables...")
+        dataSource.connection.use { conn ->
+            conn.createStatement().use { stmt ->
+                tables.forEach { table ->
+                    try {
+                        stmt.execute("ALTER TABLE $table REPLICA IDENTITY FULL;")
+                    } catch (e: Exception) {
+                        logger.warn("Failed to set REPLICA IDENTITY for $table: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Создание replication slot
      */
     fun createSlot(slotName: String, temporary: Boolean = false): Boolean {
@@ -66,59 +85,6 @@ class SlotManager(private val dataSource: DataSource) {
     }
 
     /**
-     * Получение информации о слоте
-     */
-    fun getSlotInfo(slotName: String): SlotInfo? {
-        dataSource.connection.use { conn ->
-            val sql = """
-                SELECT 
-                    slot_name,
-                    plugin,
-                    slot_type,
-                    database,
-                    active,
-                    restart_lsn,
-                    confirmed_flush_lsn,
-                    wal_status
-                FROM pg_replication_slots
-                WHERE slot_name = ?
-            """.trimIndent()
-
-            conn.prepareStatement(sql).use { pstmt ->
-                pstmt.setString(1, slotName)
-                val rs = pstmt.executeQuery()
-                return if (rs.next()) {
-                    SlotInfo(
-                        slotName = rs.getString("slot_name"),
-                        plugin = rs.getString("plugin"),
-                        slotType = rs.getString("slot_type"),
-                        database = rs.getString("database"),
-                        active = rs.getBoolean("active"),
-                        restartLsn = rs.getString("restart_lsn"),
-                        confirmedFlushLsn = rs.getString("confirmed_flush_lsn"),
-                        walStatus = rs.getString("wal_status")
-                    )
-                } else {
-                    null
-                }
-            }
-        }
-    }
-
-    /**
-     * Получение текущего LSN базы данных
-     */
-    fun getCurrentLsn(): String {
-        dataSource.connection.use { conn ->
-            val sql = "SELECT pg_current_wal_lsn()::text"
-            conn.createStatement().use { stmt ->
-                val rs = stmt.executeQuery(sql)
-                return if (rs.next()) rs.getString(1) else "0/0"
-            }
-        }
-    }
-
-    /**
      * Вычисление lag в байтах
      */
     fun calculateLag(slotName: String): Long {
@@ -144,34 +110,6 @@ class SlotManager(private val dataSource: DataSource) {
     }
 
     /**
-     * Удаление replication slot
-     */
-    fun dropSlot(slotName: String): Boolean {
-        dataSource.connection.use { conn ->
-            try {
-                if (!slotExists(slotName)) {
-                    logger.warn("Replication slot '$slotName' does not exist")
-                    return false
-                }
-
-                // Деактивируем слот если активен
-                deactivateSlot(conn, slotName)
-
-                val sql = "SELECT pg_drop_replication_slot(?)"
-                conn.prepareStatement(sql).use { pstmt ->
-                    pstmt.setString(1, slotName)
-                    pstmt.executeUpdate()
-                    logger.info("Dropped replication slot: $slotName")
-                    return true
-                }
-            } catch (e: SQLException) {
-                logger.error("Failed to drop replication slot: ${e.message}", e)
-                return false
-            }
-        }
-    }
-
-    /**
      * Создание публикации для logical replication
      */
     private fun createPublication(conn: Connection, publicationName: String) {
@@ -190,62 +128,5 @@ class SlotManager(private val dataSource: DataSource) {
         }
     }
 
-    /**
-     * Деактивация слота (завершение активного подключения)
-     */
-    private fun deactivateSlot(conn: Connection, slotName: String) {
-        // Завершаем активные replication подключения
-        val sql = """
-            SELECT pg_terminate_backend(active_pid)
-            FROM pg_replication_slots
-            WHERE slot_name = ? AND active = true
-        """.trimIndent()
-
-        conn.prepareStatement(sql).use { pstmt ->
-            pstmt.setString(1, slotName)
-            pstmt.executeUpdate()
-        }
-    }
-
-    /**
-     * Получение всех replication слотов
-     */
-    fun getAllSlots(): List<SlotInfo> {
-        val slots = mutableListOf<SlotInfo>()
-        dataSource.connection.use { conn ->
-            val sql = "SELECT * FROM pg_replication_slots ORDER BY slot_name"
-            conn.createStatement().use { stmt ->
-                val rs = stmt.executeQuery(sql)
-                while (rs.next()) {
-                    slots.add(
-                        SlotInfo(
-                            slotName = rs.getString("slot_name"),
-                            plugin = rs.getString("plugin"),
-                            slotType = rs.getString("slot_type"),
-                            database = rs.getString("database"),
-                            active = rs.getBoolean("active"),
-                            restartLsn = rs.getString("restart_lsn"),
-                            confirmedFlushLsn = rs.getString("confirmed_flush_lsn"),
-                            walStatus = rs.getString("wal_status")
-                        )
-                    )
-                }
-            }
-        }
-        return slots
-    }
 }
 
-/**
- * Информация о replication слоте
- */
-data class SlotInfo(
-    val slotName: String,
-    val plugin: String,
-    val slotType: String,
-    val database: String,
-    val active: Boolean,
-    val restartLsn: String,
-    val confirmedFlushLsn: String,
-    val walStatus: String?
-)

@@ -1,7 +1,5 @@
 package state
 
-import java.sql.Connection
-import java.sql.PreparedStatement
 import java.time.LocalDateTime
 import java.util.*
 import javax.sql.DataSource
@@ -85,28 +83,6 @@ class StateRepository(private val dataSource: DataSource) {
     }
 
     /**
-     * Начало миграции таблицы
-     */
-    fun startTable(migrationId: String, tableName: String, totalRows: Long = 0) {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement("""
-                UPDATE migration_state 
-                SET status = ?, 
-                    started_at = NOW(), 
-                    total_rows = ?,
-                    updated_at = NOW()
-                WHERE migration_id = ? AND table_name = ?
-            """).use { pstmt ->
-                pstmt.setString(1, MigrationStatus.IN_PROGRESS.name)
-                pstmt.setLong(2, totalRows)
-                pstmt.setString(3, migrationId)
-                pstmt.setString(4, tableName)
-                pstmt.executeUpdate()
-            }
-        }
-    }
-
-    /**
      * Сохранение прогресса после батча
      */
     fun saveProgress(
@@ -128,58 +104,6 @@ class StateRepository(private val dataSource: DataSource) {
                 pstmt.setLong(1, processedRows)
                 pstmt.setString(2, lastUuid?.toString())
                 pstmt.setLong(3, batchNumber)
-                pstmt.setString(4, migrationId)
-                pstmt.setString(5, tableName)
-                pstmt.executeUpdate()
-            }
-        }
-    }
-
-    /**
-     * Завершение миграции таблицы
-     */
-    fun completeTable(migrationId: String, tableName: String, totalRows: Long) {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement("""
-                UPDATE migration_state 
-                SET status = ?, 
-                    completed_at = NOW(),
-                    processed_rows = ?,
-                    total_rows = ?,
-                    updated_at = NOW()
-                WHERE migration_id = ? AND table_name = ?
-            """).use { pstmt ->
-                pstmt.setString(1, MigrationStatus.COMPLETED.name)
-                pstmt.setLong(2, totalRows)
-                pstmt.setLong(3, totalRows)
-                pstmt.setString(4, migrationId)
-                pstmt.setString(5, tableName)
-                pstmt.executeUpdate()
-            }
-        }
-    }
-
-    /**
-     * Пометка таблицы как неудачной
-     */
-    fun failTable(
-        migrationId: String,
-        tableName: String,
-        errorMessage: String,
-        retryCount: Int = 0
-    ) {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement("""
-                UPDATE migration_state 
-                SET status = ?, 
-                    error_message = ?,
-                    retry_count = ?,
-                    updated_at = NOW()
-                WHERE migration_id = ? AND table_name = ?
-            """).use { pstmt ->
-                pstmt.setString(1, MigrationStatus.FAILED.name)
-                pstmt.setString(2, errorMessage)
-                pstmt.setInt(3, retryCount)
                 pstmt.setString(4, migrationId)
                 pstmt.setString(5, tableName)
                 pstmt.executeUpdate()
@@ -254,21 +178,6 @@ class StateRepository(private val dataSource: DataSource) {
     }
 
     /**
-     * Проверка существования миграции
-     */
-    fun migrationExists(migrationId: String): Boolean {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement("""
-                SELECT COUNT(*) FROM migration_state WHERE migration_id = ?
-            """).use { pstmt ->
-                pstmt.setString(1, migrationId)
-                val rs = pstmt.executeQuery()
-                return rs.next() && rs.getInt(1) > 0
-            }
-        }
-    }
-
-    /**
      * Получение списка успешно мигрированных таблиц
      */
     fun getCompletedTables(migrationId: String): List<String> {
@@ -314,22 +223,6 @@ class StateRepository(private val dataSource: DataSource) {
     }
 
     /**
-     * Удаление состояния для таблицы (полная очистка)
-     */
-    fun removeTableState(migrationId: String, tableName: String) {
-        dataSource.connection.use { conn ->
-            conn.prepareStatement("""
-                DELETE FROM migration_state 
-                WHERE migration_id = ? AND table_name = ?
-            """).use { pstmt ->
-                pstmt.setString(1, migrationId)
-                pstmt.setString(2, tableName)
-                pstmt.executeUpdate()
-            }
-        }
-    }
-
-    /**
      * Получение последней активной миграции
      */
     fun getLastActiveMigration(): String? {
@@ -346,13 +239,6 @@ class StateRepository(private val dataSource: DataSource) {
                 return if (rs.next()) rs.getString(1) else null
             }
         }
-    }
-
-    /**
-     * Генерация уникального ID миграции
-     */
-    fun generateMigrationId(): String {
-        return "migration_${LocalDateTime.now().toString().replace(Regex("[^0-9]"), "")}"
     }
 
     private fun mapResultSetToState(rs: java.sql.ResultSet): TableMigrationState {
