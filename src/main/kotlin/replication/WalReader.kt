@@ -1,11 +1,19 @@
 package replication
 
+import com.zaxxer.hikari.HikariDataSource
 import org.postgresql.PGConnection
 import org.postgresql.replication.PGReplicationStream
+import org.postgresql.util.PSQLException
 import org.slf4j.LoggerFactory
 import java.nio.ByteBuffer
+import java.sql.Connection
+import java.sql.DriverManager
 import java.time.LocalDateTime
+import java.util.Properties
+import java.util.UUID
 import javax.sql.DataSource
+
+private val uuidRegex = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 /**
  * Читатель WAL журнала PostgreSQL
@@ -15,15 +23,37 @@ class WalReader(
     private val sourceDataSource: DataSource,
     private val config: ReplicationConfig = ReplicationConfig()
 ) {
+
     private val logger = LoggerFactory.getLogger(WalReader::class.java)
     private var replicationStream: PGReplicationStream? = null
     private var isRunning = false
+
+    private val relationMap = mutableMapOf<Int, String>()
+
+    private val relationColumns = mutableMapOf<Int, List<String>>()
+
+    private var replConnection: Connection? = null
 
     /**
      * Инициализация replication подключения
      */
     fun initialize(slotName: String): PGConnection {
-        val conn = sourceDataSource.connection as PGConnection
+        // Достаем параметры из пула
+        val hikariDs = sourceDataSource as HikariDataSource
+
+        // Добавляем критически важный флаг репликации
+        val props = Properties().apply {
+            setProperty("user", hikariDs.username)
+            setProperty("password", hikariDs.password)
+            setProperty("assumeMinServerVersion", "9.4")
+            setProperty("replication", "database")
+        }
+
+        // Создаем прямое (не пуловое) соединение
+        val sqlConn = DriverManager.getConnection(hikariDs.jdbcUrl, props)
+        val replConn = sqlConn.unwrap(PGConnection::class.java)
+
+        this.replConnection = sqlConn
 
         // Создаём replication slot если не существует
         val slotManager = SlotManager(sourceDataSource)
@@ -31,20 +61,21 @@ class WalReader(
             slotManager.createSlot(slotName, temporary = config.temporary)
         }
 
-        // Открываем replication поток
-        replicationStream = conn
-            .getReplicationAPI()
+        // Открываем replication поток через наше выделенное соединение
+        replicationStream = replConn
+            .replicationAPI
             .replicationStream()
             .logical()
             .withSlotName(slotName)
             .withSlotOption("publication_names", config.publicationName)
             .withSlotOption("proto_version", "1")
+            .withStatusInterval(10, java.util.concurrent.TimeUnit.SECONDS)
             .start()
 
         isRunning = true
         logger.info("WAL reader initialized with slot: $slotName")
 
-        return conn
+        return replConn
     }
 
     /**
@@ -63,6 +94,15 @@ class WalReader(
             }
 
             return parseWalEvent(byteBuffer, stream.lastReceiveLSN.toString())
+        } catch (e: PSQLException) {
+            // Если ошибка произошла во время остановки приложения (Ctrl+C),
+            // просто тихо выходим, это нормальное поведение.
+            if (!isRunning) {
+                logger.error("Error while reading event", e)
+                return null
+            }
+            // Иначе пробрасываем ошибку дальше
+            throw e
         } catch (e: Exception) {
             logger.error("Error reading WAL event: ${e.message}", e)
             throw e
@@ -94,129 +134,125 @@ class WalReader(
     /**
      * Парсинг WAL события из ByteBuffer
      */
-    private fun parseWalEvent(buffer: ByteBuffer, lsn: String): WalEvent? {
-        // Пропускаем заголовок сообщения
-        // Формат: https://www.postgresql.org/docs/current/protocol-logicalrep-message-formats.html
-
-        if (buffer.remaining() < 1) return null
-
+    private fun parseWalEvent(buffer: ByteBuffer, commitLsn: String): WalEvent? {
         val messageType = buffer.get().toInt().toChar()
-
         return when (messageType) {
-            'I' -> parseInsert(buffer, lsn)
-            'U' -> parseUpdate(buffer, lsn)
-            'D' -> parseDelete(buffer, lsn)
-            'B' -> null // Begin transaction
-            'C' -> null // Commit transaction
-            'R' -> null // Relation
-            'T' -> null // Type
-            'Y' -> null // Origin
-            else -> {
-                logger.debug("Unknown message type: $messageType")
-                null
+            'R' -> { // Relation message (содержит имя таблицы)
+                parseRelation(buffer)
+                null // Это служебное сообщение, не отправляем его дальше
             }
+            'I' -> parseInsert(buffer, commitLsn)
+            'U' -> parseUpdate(buffer, commitLsn)
+            'D' -> parseDelete(buffer, commitLsn)
+            else -> null // Игнорируем B (Begin), C (Commit) и другие
         }
+    }
+
+    private fun parseRelation(buffer: ByteBuffer) {
+        val relationId = buffer.int
+        readNullTerminatedString(buffer) // Пропускаем namespace
+        val tableName = readNullTerminatedString(buffer)
+        buffer.get() // Пропускаем replicaIdentity
+        val numColumns = buffer.short
+
+        val columns = mutableListOf<String>()
+        (0 until numColumns).forEach { _ ->
+            buffer.get() // Пропускаем flags
+            val colName = readNullTerminatedString(buffer)
+            columns.add(colName) // Сохраняем имя колонки
+            buffer.int // Пропускаем dataType
+            buffer.int // Пропускаем typmod
+        }
+        // Сохраняем маппинг
+        relationMap[relationId] = tableName
+        relationColumns[relationId] = columns
+    }
+
+    private fun readNullTerminatedString(buffer: ByteBuffer): String {
+        val bytes = mutableListOf<Byte>()
+        while (buffer.hasRemaining()) {
+            val b = buffer.get()
+            if (b == 0.toByte()) break
+            bytes.add(b)
+        }
+        return String(bytes.toByteArray(), Charsets.UTF_8)
     }
 
     /**
      * Парсинг INSERT события
      */
-    private fun parseInsert(buffer: ByteBuffer, lsn: String): WalInsertEvent {
-        val tableName = parseTableName(buffer)
-        val tuple = parseTuple(buffer)
+    private fun parseInsert(buffer: ByteBuffer, commitLsn: String): WalInsertEvent? {
+        val relationId = buffer.int
+        val tableName = relationMap[relationId] ?: return null
+        val columns = relationColumns[relationId] ?: emptyList() // Достаем имена колонок
 
-        return WalInsertEvent(
-            tableName = tableName,
-            commitLsn = lsn,
-            timestamp = LocalDateTime.now(),
-            newTuple = tuple
-        )
+        buffer.get() // Пропускаем tupleType ('N')
+        val tuple = parseTuple(buffer, columns) // Передаем колонки
+
+        return WalInsertEvent(tableName, commitLsn, LocalDateTime.now(), tuple)
     }
 
     /**
      * Парсинг UPDATE события
      */
-    private fun parseUpdate(buffer: ByteBuffer, lsn: String): WalUpdateEvent {
-        val tableName = parseTableName(buffer)
+    private fun parseUpdate(buffer: ByteBuffer, commitLsn: String): WalUpdateEvent? {
+        val relationId = buffer.int
+        val tableName = relationMap[relationId] ?: return null
+        val columns = relationColumns[relationId] ?: emptyList() // Достаем имена колонок
 
-        // Old tuple (может отсутствовать в зависимости от replica identity)
-        val oldTuple = if (buffer.get().toInt().toChar() == 'K' || buffer.get().toInt().toChar() == 'O') {
-            parseTuple(buffer)
-        } else {
-            null
+        var tupleType = buffer.get().toInt().toChar()
+        var oldTuple: Map<String, Any?>? = null
+
+        if (tupleType == 'O' || tupleType == 'K') {
+            oldTuple = parseTuple(buffer, columns) // Передаем колонки
+            tupleType = buffer.get().toInt().toChar()
         }
 
-        // New tuple
-        buffer.get() // 'N'
-        val newTuple = parseTuple(buffer)
+        val newTuple = if (tupleType == 'N') parseTuple(buffer, columns) else emptyMap()
 
-        return WalUpdateEvent(
-            tableName = tableName,
-            commitLsn = lsn,
-            timestamp = LocalDateTime.now(),
-            oldTuple = oldTuple,
-            newTuple = newTuple
-        )
+        return WalUpdateEvent(tableName, commitLsn, LocalDateTime.now(), oldTuple, newTuple)
     }
 
     /**
      * Парсинг DELETE события
      */
-    private fun parseDelete(buffer: ByteBuffer, lsn: String): WalDeleteEvent {
-        val tableName = parseTableName(buffer)
+    private fun parseDelete(buffer: ByteBuffer, commitLsn: String): WalDeleteEvent? {
+        val relationId = buffer.int
+        val tableName = relationMap[relationId] ?: return null
+        val columns = relationColumns[relationId] ?: emptyList() // Достаем имена колонок
 
-        // Old tuple
-        buffer.get() // 'K' или 'O'
-        val oldTuple = parseTuple(buffer)
+        buffer.get() // Пропускаем tupleType
+        val oldTuple = parseTuple(buffer, columns) // Передаем колонки
 
-        return WalDeleteEvent(
-            tableName = tableName,
-            commitLsn = lsn,
-            timestamp = LocalDateTime.now(),
-            oldTuple = oldTuple
-        )
-    }
-
-    /**
-     * Парсинг имени таблицы
-     */
-    private fun parseTableName(buffer: ByteBuffer): String {
-        // Пропускаем relation ID (4 байта)
-        buffer.int
-
-        // Namespace (schema)
-        val schemaLength = buffer.short.toInt()
-        val schema = ByteArray(schemaLength).also { buffer.get(it) }.toString(Charsets.UTF_8)
-
-        // Table name
-        val tableLength = buffer.short.toInt()
-        val table = ByteArray(tableLength).also { buffer.get(it) }.toString(Charsets.UTF_8)
-
-        return "$schema.$table"
+        return WalDeleteEvent(tableName, commitLsn, LocalDateTime.now(), oldTuple)
     }
 
     /**
      * Парсинг кортежа (набора колонок)
      */
-    private fun parseTuple(buffer: ByteBuffer): Map<String, Any?> {
+    private fun parseTuple(buffer: ByteBuffer, columns: List<String>): Map<String, Any?> {
         val tuple = mutableMapOf<String, Any?>()
+        val numColumns = buffer.short
 
-        val columnCount = buffer.short.toInt()
+        for (i in 0 until numColumns) {
+            val kind = buffer.get().toInt().toChar()
 
-        repeat(columnCount) { i ->
-            val flags = buffer.get().toInt()
-            val isNull = (flags and 0x80) != 0
+            // Если есть имя колонки, используем его, иначе fallback
+            val colName = if (i < columns.size) columns[i] else "column_$i"
 
-            if (isNull) {
-                // Имя колонки неизвестно из WAL, используем индекс
-                tuple["column_$i"] = null
-            } else {
-                val length = buffer.int
-                val valueBytes = ByteArray(length).also { buffer.get(it) }
-                val value = String(valueBytes, Charsets.UTF_8)
-
-                // Парсим тип значения
-                tuple["column_$i"] = parseValue(value)
+            when (kind) {
+                'n' -> {
+                    tuple[colName] = null
+                }
+                'u' -> {
+                    tuple[colName] = null
+                }
+                else -> {
+                    val length = buffer.int
+                    val valueBytes = ByteArray(length).also { buffer.get(it) }
+                    val value = String(valueBytes, Charsets.UTF_8)
+                    tuple[colName] = parseValue(value)
+                }
             }
         }
 
@@ -229,11 +265,16 @@ class WalReader(
     private fun parseValue(value: String): Any? {
         return when {
             value.equals("null", ignoreCase = true) -> null
-            value.startsWith("'") && value.endsWith("'") -> value.removeSurrounding("'")
-            value.matches(Regex("\\d+")) -> value.toLong()
-            value.matches(Regex("\\d+\\.\\d+")) -> value.toDouble()
+            value.startsWith("'") && value.endsWith("'") -> {
+                val cleanValue = value.removeSurrounding("'")
+                // Проверяем, не спрятан ли UUID внутри кавычек
+                if (cleanValue.matches(uuidRegex)) UUID.fromString(cleanValue) else cleanValue
+            }
+            value.matches(Regex("-?\\d+")) -> value.toLong()
+            value.matches(Regex("-?\\d+\\.\\d+")) -> value.toDouble()
             value.equals("t", ignoreCase = true) -> true
             value.equals("f", ignoreCase = true) -> false
+            value.matches(uuidRegex) -> UUID.fromString(value)
             else -> value
         }
     }
@@ -254,9 +295,21 @@ class WalReader(
      */
     fun stop() {
         isRunning = false
-        replicationStream?.close()
-        replicationStream = null
-        logger.info("WAL reader stopped")
+        logger.info("Stopping WAL reader...")
+        try {
+            replicationStream?.close()
+        } catch (e: Exception) {
+            logger.debug("Stream gracefully closed during shutdown: ${e.message}")
+        } finally {
+            replicationStream = null
+
+            try {
+                replConnection?.close()
+            } catch (_: Exception) {}
+            replConnection = null
+
+            logger.info("WAL reader stopped")
+        }
     }
 
 }

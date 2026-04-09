@@ -83,16 +83,34 @@ class MappingService(
      * Использует только кэш - без соединений!
      */
     fun getNewId(tableName: String, oldUuid: UUID): Long? {
-        // Проверка в глобальном кэше (быстро, без БД)
+        // Сначала ищем в глобальном кэше (О(1), без БД)
         cache[oldUuid]?.let { return it }
 
-        // Проверка в табличном кэше (быстро, без БД)
+        // Ищем в пакетном кэше текущей транзакции
         val tableMappings = batchCache[tableName]
-        if (tableMappings != null) {
+        if (tableMappings != null && tableMappings.containsKey(oldUuid)) {
             return tableMappings[oldUuid]
         }
 
-        // Если не нашли в кэше - это ошибка (данных ещё нет)
+        // Ищем в базе данных (если процесс только что запустился)
+        targetDataSource.connection.use { conn ->
+            val sql = "SELECT new_id FROM migration_mapping WHERE table_name = ? AND old_uuid = ?"
+            conn.prepareStatement(sql).use { pstmt ->
+                pstmt.setString(1, tableName)
+                pstmt.setObject(2, oldUuid)
+                val rs = pstmt.executeQuery()
+                if (rs.next()) {
+                    val newId = rs.getLong("new_id")
+                    // Сохраняем в RAM, чтобы в следующий раз отдать мгновенно
+                    if (cache.size < CACHE_SIZE_LIMIT) {
+                        cache[oldUuid] = newId
+                    }
+                    return newId
+                }
+            }
+        }
+
+        // Если не нашли даже в БД — значит данных действительно нет
         return null
     }
 

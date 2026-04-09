@@ -3,6 +3,9 @@ package logging
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Timer
+import io.micrometer.core.instrument.binder.jvm.JvmGcMetrics
+import io.micrometer.core.instrument.binder.jvm.JvmMemoryMetrics
+import io.micrometer.core.instrument.binder.system.ProcessorMetrics
 import io.micrometer.prometheusmetrics.PrometheusConfig
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry
 import io.prometheus.metrics.exporter.pushgateway.PushGateway
@@ -36,6 +39,10 @@ object MetricsService {
 
     init {
         logger.info("MetricsService initialized (Pushgateway mode)")
+
+        JvmMemoryMetrics().bindTo(registry)
+        JvmGcMetrics().bindTo(registry)
+        ProcessorMetrics().bindTo(registry)
     }
 
     private val _migrationRowsTotal = mutableMapOf<String, Counter>()
@@ -138,5 +145,24 @@ object MetricsService {
 
         scheduler = null
         isInitialized = false
+    }
+
+    fun getReplicationEventsCounter(): Counter =
+        registry.counter("replication_events_applied_total")
+
+    fun registerReplicationLagGauge(supplier: () -> Double) {
+        Gauge.builder("replication_lag_bytes") {
+            try {
+                supplier()
+            } catch (e: java.sql.SQLException) {
+                if (e.message?.contains("has been closed") == true) {
+                    0.0
+                } else {
+                    throw e
+                }
+            }
+        }
+            .description("Replication lag in bytes")
+            .register(registry)
     }
 }

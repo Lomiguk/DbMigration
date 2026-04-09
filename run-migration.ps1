@@ -1,5 +1,9 @@
 ﻿# Full Migration Cycle Script
 # Usage: .\run-migration.ps1 [-Count 100000] [-SkipGenerate] [-SkipSync] [-SkipValidate] [-Analyze] [-MigrateIndexes]
+
+[console]::InputEncoding = [console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 param(
     [int]$Count = 100000,
     [switch]$SkipGenerate,

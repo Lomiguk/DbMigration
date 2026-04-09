@@ -3,6 +3,7 @@ package utils
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import io.micrometer.core.instrument.MeterRegistry
+import logging.MetricsService
 import java.util.UUID
 import javax.sql.DataSource
 
@@ -22,7 +23,6 @@ object HikariFactory {
         user: String,
         password: String,
         maxPoolSize: Int,
-        metricRegistry: MeterRegistry? = null
     ): HikariDataSource {
         return HikariDataSource(HikariConfig().apply {
             this.jdbcUrl = jdbcUrl
@@ -32,9 +32,10 @@ object HikariFactory {
             this.minimumIdle = 2
             this.connectionTimeout = 30000
             this.validationTimeout = 5000
-            if (metricRegistry != null) {
-                this.metricRegistry = metricRegistry
-            }
+
+            this.addDataSourceProperty("stringtype", "unspecified")
+
+            this.metricRegistry = MetricsService.registry
         })
     }
 

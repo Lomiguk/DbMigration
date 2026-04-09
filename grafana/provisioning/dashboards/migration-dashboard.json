@@ -1,178 +1,78 @@
 {
-  "annotations": {
-    "list": []
-  },
+  "annotations": { "list": [] },
   "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
-  "links": [],
-  "liveNow": true,
   "panels": [
+    {
+      "title": "Total Migrated Rows",
+      "type": "stat",
+      "id": 7,
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum(migration_rows_total)", "legendFormat": "Total Rows" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisPlacement": "auto", "axisLabel": "", "drawStyle": "line", "lineInterpolation": "linear", "showPoints": "auto", "barAlignment": 0, "lineWidth": 1, "fillOpacity": 10, "gradientMode": "none", "spanNulls": false, "insertNulls": false, "hideFrom": { "tooltip": false, "viz": false, "legend": false } }
+        }
+      },
+      "options": {
+        "reduceOptions": { "values": false, "calcs": [ "lastNotNull" ], "fields": "" },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "title": "System Resource Load (CPU & RAM)",
+      "type": "timeseries",
+      "id": 8,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        { "expr": "process_cpu_usage", "legendFormat": "CPU Usage" },
+        { "expr": "sum(jvm_memory_used_bytes{area=\"heap\"})", "legendFormat": "Heap RAM Used" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisPlacement": "auto", "drawStyle": "line", "lineWidth": 2, "fillOpacity": 20 }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Heap RAM Used" }, "properties": [ { "id": "unit", "value": "bytes" } ] },
+          { "matcher": { "id": "byName", "options": "CPU Usage" }, "properties": [ { "id": "unit", "value": "percentunit" } ] }
+        ]
+      }
+    },
     {
       "title": "Migration Throughput (rows/sec)",
       "type": "timeseries",
       "id": 1,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "targets": [
-        {
-          "expr": "rate(migration_rows_total[1m])",
-          "legendFormat": "{{table}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "rows/sec",
-          "color": { "mode": "palette-classic" }
-        }
-      }
-    },
-    {
-      "title": "Batch Duration (seconds)",
-      "type": "timeseries",
-      "id": 2,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-      "targets": [
-        {
-          "expr": "rate(migration_batch_duration_seconds_sum[1m]) / rate(migration_batch_duration_seconds_count[1m])",
-          "legendFormat": "{{table}} - {{operation}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "color": { "mode": "palette-classic" }
-        }
-      }
-    },
-    {
-      "title": "HikariCP Connections",
-      "type": "timeseries",
-      "id": 3,
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
-      "targets": [
-        {
-          "expr": "hikaricp_connections_active",
-          "legendFormat": "{{pool}} - active",
-          "refId": "A"
-        },
-        {
-          "expr": "hikaricp_connections_idle",
-          "legendFormat": "{{pool}} - idle",
-          "refId": "B"
-        },
-        {
-          "expr": "hikaricp_connections_pending",
-          "legendFormat": "{{pool}} - pending",
-          "refId": "C"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": { "mode": "palette-classic" }
-        }
-      }
-    },
-    {
-      "title": "Mapping Cache Size",
-      "type": "stat",
-      "id": 4,
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 8 },
-      "targets": [
-        {
-          "expr": "mapping_cache_size",
-          "legendFormat": "Cache entries",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": { "mode": "thresholds" },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 250000 },
-              { "color": "red", "value": 450000 }
-            ]
-          }
-        }
-      }
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "targets": [ { "expr": "rate(migration_rows_total[1m])", "legendFormat": "{{table}}" } ],
+      "fieldConfig": { "defaults": { "unit": "rows/sec" } }
     },
     {
       "title": "Replication Lag (bytes)",
       "type": "timeseries",
       "id": 5,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "targets": [
-        {
-          "expr": "replication_lag_bytes",
-          "legendFormat": "Lag",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "color": { "mode": "palette-classic" }
-        }
-      }
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 14 },
+      "targets": [ { "expr": "replication_lag_bytes", "legendFormat": "Lag" } ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
     },
     {
       "title": "Replication Events Applied",
       "type": "stat",
       "id": 6,
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 12 },
-      "targets": [
-        {
-          "expr": "replication_events_applied_total",
-          "legendFormat": "Events",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": { "mode": "thresholds" }
-        }
-      }
-    },
-    {
-      "title": "Total Migrated Rows",
-      "type": "stat",
-      "id": 7,
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 },
-      "targets": [
-        {
-          "expr": "migration_rows_total",
-          "legendFormat": "{{table}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": { "mode": "palette-classic" }
-        }
-      }
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 14 },
+      "targets": [ { "expr": "replication_events_applied_total", "legendFormat": "Events" } ],
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" } } }
     }
   ],
   "schemaVersion": 39,
-  "tags": ["migration", "postgresql"],
-  "templating": {
-    "list": []
-  },
-  "time": {
-    "from": "now-15m",
-    "to": "now"
-  },
-  "timepicker": {},
-  "timezone": "browser",
+  "time": { "from": "now-15m", "to": "now" },
   "title": "DB Migration Observatory",
-  "uid": "db-migration-001",
-  "version": 1,
-  "weekStart": ""
+  "uid": "db-migration-001"
 }

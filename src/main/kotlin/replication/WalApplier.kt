@@ -265,13 +265,14 @@ class WalApplier(
     private fun transformValue(tableName: String, columnName: String, value: Any?): Any? {
         if (value !is java.util.UUID) return value
 
-        // Быстрый поиск в кэше без обращения к БД
+        // Быстрый поиск таблицы по внешнему ключу
         val referencedTable = fkCache[tableName]?.get(columnName)
 
         return if (referencedTable != null) {
-            mappingService.getNewId(referencedTable, value) ?: value
+            mappingService.getNewId(referencedTable, value)
+                ?: throw IllegalStateException("Отсутствует маппинг для FK $tableName.$columnName = $value (ссылается на $referencedTable). Убедитесь, что таблица была мигрирована.")
         } else {
-            value
+            value // Это первичный ключ, оставляем как есть (значение сгенерирует сама БД)
         }
     }
 

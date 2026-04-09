@@ -29,8 +29,6 @@ class ReplicationService(
     private var eventsProcessed = 0L
     private var lastLsn: String = "0/0"
 
-
-
     /**
      * Инициализация сервиса репликации
      */
@@ -61,6 +59,9 @@ class ReplicationService(
 
         isRunning = true
         eventsProcessed = 0
+
+        MetricsService.registerReplicationLagGauge { getLag().toDouble() }
+
         logger.info("Replication service initialized")
     }
 
@@ -144,8 +145,10 @@ class ReplicationService(
         val successCount = results.count { it.success }
         val failedCount = results.size - successCount
 
+        MetricsService.getReplicationEventsCounter().increment(successCount.toDouble())
+
         // Подтверждаем LSN
-        results.filter { it.success }.lastOrNull()?.let {
+        results.lastOrNull { it.success }?.let {
             walReader.confirmLsn(it.lsn)
             lastLsn = it.lsn
         }

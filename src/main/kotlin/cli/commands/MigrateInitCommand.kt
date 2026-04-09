@@ -5,7 +5,6 @@ import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import core.DependencyResolver
 import core.MetadataReader
-import logging.MetricsService
 import ui.MigrationUi
 import utils.HikariFactory
 
