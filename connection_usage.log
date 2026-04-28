@@ -1,8 +1,0 @@
-========================================================================================================================
-CONNECTION USAGE LOG
-Started: Fri Apr 10 01:24:05 MSK 2026
-Format: TIMESTAMP | OPERATION | EVENT | THREAD | WAIT_MS | DURATION_MS | DETAILS
-========================================================================================================================
-01:24:05.443 | mapping_create_table                     | ACQUIRE_START   | main                 |        0ms |        0ms
-01:24:05.502 | mapping_create_table                     | ACQUIRE_END     | main                 |        0ms |        0ms
-01:24:05.503 | mapping_create_table                     | RELEASE         | main                 |        0ms |       65ms

@@ -6,7 +6,7 @@ import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.mordant.terminal.Terminal
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
-import engine.MappingService
+import engine.MappingServiceFactory
 import logging.MetricsService
 import replication.ReplicationService
 import replication.ReplicationConfig
@@ -52,7 +52,11 @@ class MigrateReplicateCommand : MigrateCommand(
             targetDs = HikariFactory.createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
 
             // Инициализация сервиса репликации
-            val mappingService = MappingService(targetDs)
+            val mappingService = MappingServiceFactory.create(
+                targetDataSource = targetDs,
+                strategy = config.mappingStrategy,
+                cacheLimit = config.cacheLimit
+            )
             val replConfig = ReplicationConfig(
                 slotName = slotName,
                 temporary = temporary,

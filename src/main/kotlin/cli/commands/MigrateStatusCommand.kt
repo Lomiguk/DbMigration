@@ -4,7 +4,7 @@ import com.github.ajalt.mordant.terminal.Terminal
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import core.MetadataReader
-import engine.MappingService
+import engine.MappingServiceFactory
 import logging.MetricsService
 import ui.MigrationUi
 import utils.HikariFactory
@@ -64,7 +64,11 @@ class MigrateStatusCommand : MigrateCommand(
 
             // Статус маппинга
             ui.printSectionTitle("Статус маппинга UUID → BIGINT")
-            val mappingService = MappingService(targetDs)
+            val mappingService = MappingServiceFactory.create(
+                targetDataSource = targetDs,
+                strategy = config.mappingStrategy,
+                cacheLimit = config.cacheLimit
+            )
 
             var totalMapped = 0L
             sourceTables.forEach { table ->

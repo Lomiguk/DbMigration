@@ -74,6 +74,17 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
 
+    systemProperty("file.encoding", "UTF-8")
+    systemProperty("sun.stdout.encoding", "UTF-8")
+    systemProperty("sun.err.encoding", "UTF-8")
+
+    jvmArgs(
+        "-Dfile.encoding=UTF-8",
+        "-Dstdout.encoding=UTF-8",
+        "-Dsun.stdout.encoding=UTF-8",
+        "-Dsun.err.encoding=UTF-8"
+    )
+
     // Настройки для интеграционных тестов
     maxParallelForks = 1
     testLogging {

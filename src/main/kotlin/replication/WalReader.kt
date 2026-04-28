@@ -2,6 +2,7 @@ package replication
 
 import com.zaxxer.hikari.HikariDataSource
 import org.postgresql.PGConnection
+import org.postgresql.replication.LogSequenceNumber
 import org.postgresql.replication.PGReplicationStream
 import org.postgresql.util.PSQLException
 import org.slf4j.LoggerFactory
@@ -93,15 +94,13 @@ class WalReader(
                 return null
             }
 
-            return parseWalEvent(byteBuffer, stream.lastReceiveLSN.toString())
+            return parseWalEvent(byteBuffer, stream.lastReceiveLSN.asString())
+
         } catch (e: PSQLException) {
-            // Если ошибка произошла во время остановки приложения (Ctrl+C),
-            // просто тихо выходим, это нормальное поведение.
             if (!isRunning) {
                 logger.error("Error while reading event", e)
                 return null
             }
-            // Иначе пробрасываем ошибку дальше
             throw e
         } catch (e: Exception) {
             logger.error("Error reading WAL event: ${e.message}", e)
@@ -283,9 +282,19 @@ class WalReader(
      * Подтверждение обработки LSN
      */
     fun confirmLsn(lsn: String) {
-        // Упрощённая реализация - просто сохраняем последний LSN
-        // В production нужно использовать правильный API PostgreSQL
-        lastAppliedLsn = lsn
+        val stream = replicationStream ?: return
+        try {
+            val lsnObj = LogSequenceNumber.valueOf(lsn)
+
+            // Сообщаем PostgreSQL, что данные получены и записаны на диск (применены)
+            stream.setAppliedLSN(lsnObj)
+            stream.setFlushedLSN(lsnObj)
+            stream.forceUpdateStatus()
+
+            lastAppliedLsn = lsn
+        } catch (e: Exception) {
+            logger.error("Failed to confirm LSN: $lsn", e)
+        }
     }
 
     private var lastAppliedLsn: String = "0/0"

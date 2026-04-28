@@ -61,8 +61,11 @@ abstract class MappingServiceBase(
      * Пакетное сохранение маппинга в указанном соединении
      */
     open fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>, conn: java.sql.Connection) {
-        // По умолчанию создаёт новое соединение
-        saveMappingBatch(tableName, mappings)
+        mappings.forEach { (uuid, newId) ->
+            saveMappingInMemory(uuid, newId)
+        }
+
+        HikariFactory.saveMappingBatchInConnection(conn, tableName, mappings)
     }
 
     /**
@@ -83,6 +86,11 @@ abstract class MappingServiceBase(
     open fun getAllMappedUuids(tableName: String): Set<UUID> {
         return emptySet()
     }
+
+    /**
+     * Замена UUID в маппинге (используется при обновлении первичного ключа в WAL)
+     */
+    abstract fun replaceMapping(tableName: String, oldUuid: UUID, newUuid: UUID, newId: Long)
 
     /**
      * Статистика
@@ -210,6 +218,17 @@ class EagerMappingService(
         )
     }
 
+    override fun replaceMapping(tableName: String, oldUuid: UUID, newUuid: UUID, newId: Long) {
+        cache.remove(oldUuid)
+        (tableCache[tableName] as? MutableMap)?.remove(oldUuid)
+
+        if (cache.size < cacheLimit) {
+            cache[newUuid] = newId
+        }
+        val mappings = tableCache.getOrPut(tableName) { mutableMapOf() }
+        (mappings as? MutableMap)?.put(newUuid, newId)
+    }
+
     override fun getAllMappedUuids(tableName: String): Set<UUID> {
         return tableCache[tableName]?.keys ?: emptySet()
     }
@@ -264,6 +283,13 @@ class LazyMappingService(
     override fun saveMappingInMemory(oldUuid: UUID, newId: Long) {
         if (cache.size < cacheLimit) {
             cache[oldUuid] = newId
+        }
+    }
+
+    override fun replaceMapping(tableName: String, oldUuid: UUID, newUuid: UUID, newId: Long) {
+        cache.remove(oldUuid)
+        if (cache.size < cacheLimit) {
+            cache[newUuid] = newId
         }
     }
 
@@ -373,6 +399,13 @@ class HybridMappingService(
     override fun saveMappingInMemory(oldUuid: UUID, newId: Long) {
         if (cache.size < cacheLimit) {
             cache[oldUuid] = newId
+        }
+    }
+
+    override fun replaceMapping(tableName: String, oldUuid: UUID, newUuid: UUID, newId: Long) {
+        cache.remove(oldUuid)
+        if (cache.size < cacheLimit) {
+            cache[newUuid] = newId
         }
     }
 

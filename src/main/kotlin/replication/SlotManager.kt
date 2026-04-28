@@ -128,5 +128,23 @@ class SlotManager(private val dataSource: DataSource) {
         }
     }
 
+    /**
+     * Удаление replication slot
+     */
+    fun dropSlot(slotName: String) {
+        dataSource.connection.use { conn ->
+            try {
+                val sql = "SELECT pg_drop_replication_slot(?)"
+                conn.prepareStatement(sql).use { pstmt ->
+                    pstmt.setString(1, slotName)
+                    pstmt.execute()
+                    logger.info("Dropped replication slot: $slotName")
+                }
+            } catch (e: SQLException) {
+                logger.error("Failed to drop replication slot $slotName: ${e.message}")
+                throw e
+            }
+        }
+    }
 }
 

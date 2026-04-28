@@ -1,7 +1,7 @@
 package replication
 
 import core.MetadataReader
-import engine.MappingService
+import engine.MappingServiceBase
 import logging.MetricsService
 import org.slf4j.LoggerFactory
 import java.time.LocalDateTime
@@ -14,8 +14,8 @@ import javax.sql.DataSource
 class ReplicationService(
     private val sourceDataSource: DataSource,
     private val targetDataSource: DataSource,
-    private val mappingService: MappingService,
-    private val config: ReplicationConfig = ReplicationConfig()
+    private val mappingService: MappingServiceBase,
+    val config: ReplicationConfig = ReplicationConfig()
 ) {
     private val logger = LoggerFactory.getLogger(ReplicationService::class.java)
 

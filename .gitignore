@@ -50,3 +50,7 @@ bin/
 ./results
 ./gradle
 .idea/*
+
+/performance_logs
+performance_logs/
+
