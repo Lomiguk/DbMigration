@@ -9,6 +9,7 @@ import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import java.util.*
 
 /**
@@ -25,13 +26,13 @@ class DataIntegrityTest : BaseIntegrationTest() {
     @BeforeEach
     fun setUp() {
         cleanupTables("order_items", "profiles", "orders", "products", "users")
-        executeScript("DROP TABLE IF EXISTS migration_mapping CASCADE")
+        executeTargetScript("DROP TABLE IF EXISTS migration_mapping CASCADE")
         executeScript(MigrationTestFixtures.SOURCE_SCHEMA_UUID)
-        executeScript(MigrationTestFixtures.TARGET_SCHEMA_BIGINT)
+        executeTargetScript(MigrationTestFixtures.TARGET_SCHEMA_BIGINT)
 
-        metadataReader = MetadataReader(dataSource)
-        mappingService = MappingServiceFactory.create(dataSource, MappingStrategy.EAGER, 500_000)
-        dataMigrator = DataMigrator(dataSource, dataSource, mappingService, metadataReader)
+        metadataReader = MetadataReader(sourceDataSource)
+        mappingService = MappingServiceFactory.create(targetDataSource, MappingStrategy.EAGER, 500_000)
+        dataMigrator = DataMigrator(sourceDataSource, targetDataSource, mappingService, metadataReader)
     }
 
     @Nested
@@ -44,7 +45,7 @@ class DataIntegrityTest : BaseIntegrationTest() {
             val order = listOf("users", "products", "profiles", "orders", "order_items")
             order.forEach { table -> dataMigrator.migrateTable(table) }
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val insertResult = try {
                     conn.createStatement().execute(
                         "INSERT INTO profiles (user_id, first_name) VALUES (99999, 'Invalid')"
@@ -64,7 +65,7 @@ class DataIntegrityTest : BaseIntegrationTest() {
             dataMigrator.migrateTable("users")
             dataMigrator.migrateTable("profiles")
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val rs = conn.createStatement().executeQuery("""
                     SELECT p.id, p.user_id, u.id as user_exists
                     FROM profiles p
@@ -82,17 +83,19 @@ class DataIntegrityTest : BaseIntegrationTest() {
         }
 
         @Test
-        fun `should preserve data on cascade delete`() {
+        fun `should prevent deleting referenced parent records`() {
             val userUuids = insertTestData()
             dataMigrator.migrateTable("users")
             dataMigrator.migrateTable("profiles")
             val newUserId = mappingService.getNewId("users", userUuids[0])
 
-            getConnection().use { conn ->
-                conn.createStatement().execute("DELETE FROM users WHERE id = $newUserId")
-            }
+            assertThatThrownBy {
+                targetDataSource.connection.use { conn ->
+                    conn.createStatement().execute("DELETE FROM users WHERE id = $newUserId")
+                }
+            }.isInstanceOf(Exception::class.java)
 
-            assertThat(countRows("profiles")).isEqualTo(1)
+            assertThat(countRowsTarget("profiles")).isEqualTo(2)
         }
     }
 
@@ -106,7 +109,7 @@ class DataIntegrityTest : BaseIntegrationTest() {
             insertMultipleUsers(uuids)
             dataMigrator.migrateTable("users")
 
-            assertThat(countRows("users")).isEqualTo(10)
+            assertThat(countRowsTarget("users")).isEqualTo(10)
 
             uuids.forEach { uuid ->
                 val newId = mappingService.getNewId("users", uuid)
@@ -120,7 +123,7 @@ class DataIntegrityTest : BaseIntegrationTest() {
             insertSpecificUser(userUuid, "test@example.com", "2024-01-01 12:00:00")
             dataMigrator.migrateTable("users")
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val rs = conn.createStatement().executeQuery(
                     "SELECT email, created_at FROM users LIMIT 1"
                 )
@@ -131,14 +134,14 @@ class DataIntegrityTest : BaseIntegrationTest() {
         }
 
         @Test
-        fun `should preserve data on partial migration`() {
+        fun `should skip records passed as existing ids on partial migration`() {
             val uuids = List(10) { UUID.randomUUID() }
             insertMultipleUsers(uuids)
             val existingIds = setOf(uuids[0], uuids[1], uuids[2], uuids[3], uuids[4])
             dataMigrator.migrateTable("users", existingIds)
             dataMigrator.migrateTable("users", existingIds)
 
-            assertThat(countRows("users")).isEqualTo(10)
+            assertThat(countRowsTarget("users")).isEqualTo(5)
         }
     }
 
@@ -152,7 +155,7 @@ class DataIntegrityTest : BaseIntegrationTest() {
             insertMultipleUsers(uuids)
             dataMigrator.migrateTable("users")
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val rs = conn.createStatement().executeQuery(
                     "SELECT COUNT(*) FROM migration_mapping WHERE table_name = 'users'"
                 )
@@ -182,7 +185,7 @@ class DataIntegrityTest : BaseIntegrationTest() {
             insertMultipleUsers(uuids)
             dataMigrator.migrateTable("users")
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 uuids.forEach { uuid ->
                     val newId = mappingService.getNewId("users", uuid)
 
@@ -216,7 +219,7 @@ class DataIntegrityTest : BaseIntegrationTest() {
             val existingIds = mappingService.getAllMappedUuids("users")
             dataMigrator.migrateTable("users", existingIds)
 
-            assertThat(countRows("users")).isEqualTo(8)
+            assertThat(countRowsTarget("users")).isEqualTo(8)
 
             (uuids1 + uuids2).forEach { uuid ->
                 assertThat(mappingService.getNewId("users", uuid)).isNotNull()

@@ -119,19 +119,18 @@ class MappingService(
      * Оптимизировано: один запрос на пакет
      */
     fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>) {
-        // Обновляем кэши
-        mappings.forEach { (uuid, newId) ->
-            if (cache.size < CACHE_SIZE_LIMIT) {
-                cache[uuid] = newId
-            }
+        // Сохраняем в БД
+        val insertedMappings = "save_mapping_batch_$tableName".logConnectionDetailed {
+            HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
         }
 
+        // Обновляем кэши только для новых ключей, чтобы соответствовать ON CONFLICT DO NOTHING
         val tableCache = batchCache.getOrPut(tableName) { mutableMapOf() }
-        (tableCache as? MutableMap)?.putAll(mappings)
-
-        // Сохраняем в БД
-        "save_mapping_batch_$tableName".logConnectionDetailed {
-            HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
+        insertedMappings.forEach { (uuid, newId) ->
+            if (!cache.containsKey(uuid) && cache.size < CACHE_SIZE_LIMIT) {
+                cache[uuid] = newId
+            }
+            (tableCache as? MutableMap)?.put(uuid, newId)
         }
     }
 

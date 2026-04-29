@@ -27,6 +27,19 @@ class RealtimeReplicationTest : BaseIntegrationTest() {
     fun setUp() {
         MetricsService.init()
 
+        executeScript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                email TEXT,
+                region_id UUID
+            );
+            CREATE TABLE IF NOT EXISTS profiles (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(id),
+                bio TEXT
+            );
+        """.trimIndent())
+
         try {
             sourceDataSource.connection.use { conn ->
                 conn.createStatement().execute("SELECT pg_drop_replication_slot('test_logical_slot')")

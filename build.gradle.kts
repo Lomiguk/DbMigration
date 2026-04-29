@@ -56,8 +56,8 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter-params:5.10.0")
 
     // Testcontainers - интеграционные тесты с PostgreSQL
-    testImplementation("org.testcontainers:postgresql:1.20.1")
-    testImplementation("org.testcontainers:junit-jupiter:1.20.1")
+    testImplementation("org.testcontainers:postgresql:1.21.4")
+    testImplementation("org.testcontainers:junit-jupiter:1.21.4")
 
     // AssertJ - fluent assertions для читаемых проверок
     testImplementation("org.assertj:assertj-core:3.24.2")
@@ -69,6 +69,32 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 
     testImplementation(kotlin("test"))
+}
+
+tasks.withType<Test> {
+    useJUnitPlatform()
+
+    testLogging {
+        events("passed", "skipped", "failed")
+    }
+}
+
+tasks.register<Test>("benchmarkTest") {
+    description = "Runs performance and stress tests."
+    group = "verification"
+
+    useJUnitPlatform()
+
+    filter {
+        includeTestsMatching("benchmark.*")
+    }
+
+    outputs.upToDateWhen { false }
+
+    testLogging {
+        events("passed", "skipped", "failed")
+        showStandardStreams = true
+    }
 }
 
 tasks.test {
@@ -94,7 +120,7 @@ tasks.test {
     }
 
     // Увеличиваем heap size для тестов с большими данными
-    jvmArgs = listOf("-Xmx2G", "-XX:+UseG1GC")
+    jvmArgs("-Xmx2G", "-XX:+UseG1GC")
 }
 kotlin {
     jvmToolchain(17)

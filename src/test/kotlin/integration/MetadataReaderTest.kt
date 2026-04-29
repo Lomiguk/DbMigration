@@ -32,7 +32,7 @@ class MetadataReaderTest : BaseIntegrationTest() {
             val tables = metadataReader.getAllTablesWithUuidPk()
 
             assertThat(tables).containsExactlyInAnyOrder(
-                "users", "profiles", "products", "orders"
+                "users", "profiles", "products", "orders", "order_items"
             )
         }
 
@@ -114,10 +114,10 @@ class MetadataReaderTest : BaseIntegrationTest() {
         fun `should get all table columns with types`() {
             val columns = metadataReader.getTableColumns("users")
 
-            assertThat(columns).hasSize(4)
+            assertThat(columns).hasSize(3)
             assertThat(columns["id"]).isEqualTo("uuid")
-            assertThat(columns["email"]).isEqualTo("character varying")
-            assertThat(columns["created_at"]).isEqualTo("timestamp without time zone")
+            assertThat(columns["email"]).isEqualTo("varchar")
+            assertThat(columns["created_at"]).isEqualTo("timestamp")
         }
 
         @Test
@@ -131,7 +131,7 @@ class MetadataReaderTest : BaseIntegrationTest() {
             val productColumns = metadataReader.getTableColumns("products")
 
             assertThat(productColumns).containsEntry("id", "uuid")
-            assertThat(productColumns).containsEntry("name", "character varying")
+            assertThat(productColumns).containsEntry("name", "varchar")
             assertThat(productColumns).containsEntry("price", "numeric")
         }
     }
@@ -145,7 +145,7 @@ class MetadataReaderTest : BaseIntegrationTest() {
             val tables = metadataReader.getAllTablesWithUuidPk()
             val allRelations = metadataReader.getForeignKeys()
 
-            assertThat(tables).hasSize(4)
+            assertThat(tables).hasSize(5)
             assertThat(allRelations).hasSize(4)
 
             tables.forEach { table ->

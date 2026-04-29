@@ -166,18 +166,20 @@ class EagerMappingService(
     }
 
     override fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>) {
-        // Обновляем кэши
-        mappings.forEach { (uuid, newId) ->
-            if (cache.size < cacheLimit) {
+        // Сохраняем в БД
+        val insertedMappings = HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
+
+        // Обновляем кэши только для новых ключей, чтобы соответствовать ON CONFLICT DO NOTHING
+        insertedMappings.forEach { (uuid, newId) ->
+            if (!cache.containsKey(uuid) && cache.size < cacheLimit) {
                 cache[uuid] = newId
             }
         }
 
         val tableMappings = tableCache.getOrPut(tableName) { mutableMapOf() }
-        (tableMappings as? MutableMap)?.putAll(mappings)
-
-        // Сохраняем в БД
-        HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
+        insertedMappings.forEach { (uuid, newId) ->
+            (tableMappings as? MutableMap)?.put(uuid, newId)
+        }
     }
 
     override fun saveMappingInMemory(oldUuid: UUID, newId: Long) {
@@ -189,18 +191,20 @@ class EagerMappingService(
     override fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>, conn: java.sql.Connection) {
         val start = System.currentTimeMillis()
 
-        // Обновляем кэши
-        mappings.forEach { (uuid, newId) ->
-            if (cache.size < cacheLimit) {
+        // Сохраняем в БД в текущем соединении - БЕЗ commit!
+        val insertedMappings = HikariFactory.saveMappingBatchInConnection(conn, tableName, mappings)
+
+        // Обновляем кэши только для новых ключей, чтобы соответствовать ON CONFLICT DO NOTHING
+        insertedMappings.forEach { (uuid, newId) ->
+            if (!cache.containsKey(uuid) && cache.size < cacheLimit) {
                 cache[uuid] = newId
             }
         }
 
         val tableMappings = tableCache.getOrPut(tableName) { mutableMapOf() }
-        (tableMappings as? MutableMap)?.putAll(mappings)
-
-        // Сохраняем в БД в текущем соединении - БЕЗ commit!
-        HikariFactory.saveMappingBatchInConnection(conn, tableName, mappings)
+        insertedMappings.forEach { (uuid, newId) ->
+            (tableMappings as? MutableMap)?.put(uuid, newId)
+        }
 
         val duration = System.currentTimeMillis() - start
         if (duration > 100) {  // Логируем только медленные батчи
@@ -271,13 +275,13 @@ class LazyMappingService(
     }
 
     override fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>) {
-        mappings.forEach { (uuid, newId) ->
-            if (cache.size < cacheLimit) {
+        val insertedMappings = HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
+
+        insertedMappings.forEach { (uuid, newId) ->
+            if (!cache.containsKey(uuid) && cache.size < cacheLimit) {
                 cache[uuid] = newId
             }
         }
-
-        HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
     }
 
     override fun saveMappingInMemory(oldUuid: UUID, newId: Long) {
@@ -387,13 +391,13 @@ class HybridMappingService(
     }
 
     override fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>) {
-        mappings.forEach { (uuid, newId) ->
-            if (cache.size < cacheLimit) {
+        val insertedMappings = HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
+
+        insertedMappings.forEach { (uuid, newId) ->
+            if (!cache.containsKey(uuid) && cache.size < cacheLimit) {
                 cache[uuid] = newId
             }
         }
-
-        HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
     }
 
     override fun saveMappingInMemory(oldUuid: UUID, newId: Long) {

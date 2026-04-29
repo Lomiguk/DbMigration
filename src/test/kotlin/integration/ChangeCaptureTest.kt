@@ -27,13 +27,21 @@ class ChangeCaptureTest : BaseIntegrationTest() {
     @BeforeEach
     fun setUp() {
         cleanupTables("order_items", "profiles", "orders", "products", "users")
-        executeScript("DROP TABLE IF EXISTS migration_mapping CASCADE")
-        executeScript(MigrationTestFixtures.SOURCE_SCHEMA_UUID)
-        executeScript(MigrationTestFixtures.TARGET_SCHEMA_BIGINT)
+        targetDataSource.connection.use { it.createStatement().execute("DROP TABLE IF EXISTS migration_mapping CASCADE") }
 
-        metadataReader = MetadataReader(dataSource)
-        mappingService = MappingServiceFactory.create(dataSource, MappingStrategy.EAGER, 500_000)
-        dataMigrator = DataMigrator(dataSource, dataSource, mappingService, metadataReader)
+        // 1. Создаем схемы в правильных базах
+        executeScript(MigrationTestFixtures.SOURCE_SCHEMA_UUID)
+
+        targetDataSource.connection.use { conn ->
+            MigrationTestFixtures.TARGET_SCHEMA_BIGINT.split(";").filter { it.isNotBlank() }.forEach { sql ->
+                conn.createStatement().execute(sql.trim())
+            }
+        }
+
+        // 2. Разделяем Source и Target при инъекции зависимостей
+        metadataReader = MetadataReader(sourceDataSource)
+        mappingService = MappingServiceFactory.create(targetDataSource, MappingStrategy.EAGER, 500_000)
+        dataMigrator = DataMigrator(sourceDataSource, targetDataSource, mappingService, metadataReader)
         changeCapture = ChangeCapture(dataMigrator, mappingService)
     }
 
@@ -54,7 +62,8 @@ class ChangeCaptureTest : BaseIntegrationTest() {
             changeCapture.syncUpdates(listOf("users"))
             val duration = System.currentTimeMillis() - startTime
 
-            assertThat(countRows("users")).isEqualTo(15)
+            // ИСПРАВЛЕНИЕ: Проверяем строки в Target БД
+            assertThat(countRowsTarget("users")).isEqualTo(15)
             assertThat(duration).isLessThan(1000)
         }
 
@@ -65,13 +74,13 @@ class ChangeCaptureTest : BaseIntegrationTest() {
             dataMigrator.migrateTable("users")
 
             changeCapture.syncUpdates(listOf("users"))
-            assertThat(countRows("users")).isEqualTo(10)
+            assertThat(countRowsTarget("users")).isEqualTo(10)
         }
 
         @Test
         fun `should work correctly with empty table`() {
             changeCapture.syncUpdates(listOf("users"))
-            assertThat(countRows("users")).isEqualTo(0)
+            assertThat(countRowsTarget("users")).isEqualTo(0)
         }
     }
 
@@ -106,7 +115,7 @@ class ChangeCaptureTest : BaseIntegrationTest() {
             changeCapture.syncUpdates(listOf("users"))
             val duration = System.currentTimeMillis() - startTime
 
-            assertThat(countRows("users")).isEqualTo(1100)
+            assertThat(countRowsTarget("users")).isEqualTo(1100)
             println("Synchronization of 100 records took ${duration}ms")
         }
     }
@@ -164,7 +173,7 @@ class ChangeCaptureTest : BaseIntegrationTest() {
             val tables = listOf("users")
             changeCapture.syncUpdates(tables)
 
-            assertThat(countRows("users")).isEqualTo(15)
+            assertThat(countRowsTarget("users")).isEqualTo(15)
         }
 
         @Test
@@ -182,8 +191,8 @@ class ChangeCaptureTest : BaseIntegrationTest() {
 
             changeCapture.syncUpdates(migrationOrder)
 
-            assertThat(countRows("users")).isEqualTo(7)
-            assertThat(countRows("products")).isEqualTo(5)
+            assertThat(countRowsTarget("users")).isEqualTo(7)
+            assertThat(countRowsTarget("products")).isEqualTo(5)
         }
     }
 
@@ -204,7 +213,7 @@ class ChangeCaptureTest : BaseIntegrationTest() {
                 changeCapture.syncUpdates(listOf("users"))
 
                 val expectedCount = 100 + (round + 1) * 20
-                assertThat(countRows("users")).isEqualTo(expectedCount)
+                assertThat(countRowsTarget("users")).isEqualTo(expectedCount.toLong())
             }
         }
 
@@ -219,12 +228,12 @@ class ChangeCaptureTest : BaseIntegrationTest() {
 
             changeCapture.syncUpdates(listOf("users"))
 
-            assertThat(countRows("users")).isEqualTo(80)
+            assertThat(countRowsTarget("users")).isEqualTo(80)
         }
     }
 
     private fun insertUsers(uuids: List<UUID>) {
-        getConnection().use { conn ->
+        sourceDataSource.connection.use { conn ->
             val pstmt = conn.prepareStatement("INSERT INTO users (id, email) VALUES (?, ?)")
             uuids.forEachIndexed { i, uuid ->
                 pstmt.setObject(1, uuid)
@@ -236,7 +245,7 @@ class ChangeCaptureTest : BaseIntegrationTest() {
     }
 
     private fun insertProducts(count: Int) {
-        getConnection().use { conn ->
+        sourceDataSource.connection.use { conn ->
             conn.createStatement().execute(
                 """
                 INSERT INTO products (name, price) VALUES 

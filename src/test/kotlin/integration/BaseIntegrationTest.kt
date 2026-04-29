@@ -2,14 +2,33 @@ package integration
 
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
+import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
 import java.sql.Connection
 import javax.sql.DataSource
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 
+@Testcontainers
 abstract class BaseIntegrationTest {
 
     companion object {
+        @Container
+        @JvmField
+        val sourcePostgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:15-alpine")
+            .withDatabaseName("source_test_db")
+            .withUsername("test")
+            .withPassword("test")
+            .withCommand("postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10")
+
+        @Container
+        @JvmField
+        val targetPostgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:15-alpine")
+            .withDatabaseName("target_test_db")
+            .withUsername("test")
+            .withPassword("test")
+
         private var _sourceDs: HikariDataSource? = null
         private var _targetDs: HikariDataSource? = null
 
@@ -20,15 +39,15 @@ abstract class BaseIntegrationTest {
         @JvmStatic
         fun setupGlobal() {
             _sourceDs = HikariDataSource(HikariConfig().apply {
-                jdbcUrl = "jdbc:postgresql://localhost:5431/source_db"
-                username = "user"
-                password = "password"
+                jdbcUrl = sourcePostgres.jdbcUrl
+                username = sourcePostgres.username
+                password = sourcePostgres.password
                 maximumPoolSize = 10
             })
             _targetDs = HikariDataSource(HikariConfig().apply {
-                jdbcUrl = "jdbc:postgresql://localhost:5432/target_db"
-                username = "user"
-                password = "password"
+                jdbcUrl = targetPostgres.jdbcUrl
+                username = targetPostgres.username
+                password = targetPostgres.password
                 maximumPoolSize = 10
             })
         }
@@ -71,6 +90,14 @@ abstract class BaseIntegrationTest {
 
     fun executeScript(script: String) {
         sourceDataSource.connection.use { conn ->
+            script.split(";").filter { it.isNotBlank() }.forEach { sql ->
+                conn.createStatement().execute(sql.trim())
+            }
+        }
+    }
+
+    fun executeTargetScript(script: String) {
+        targetDataSource.connection.use { conn ->
             script.split(";").filter { it.isNotBlank() }.forEach { sql ->
                 conn.createStatement().execute(sql.trim())
             }

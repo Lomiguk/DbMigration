@@ -4,6 +4,7 @@ import core.MetadataReader
 import engine.MappingServiceBase
 import engine.MappingServiceFactory
 import engine.MappingStrategy
+import integration.BaseIntegrationTest
 import logging.MetricsService
 import kotlinx.coroutines.*
 import org.junit.jupiter.api.AfterEach
@@ -14,15 +15,11 @@ import replication.ReplicationConfig
 import replication.ReplicationService
 import replication.WalApplier
 import replication.WalInsertEvent
-import utils.HikariFactory
 import validation.DataIntegrityValidator
 import java.util.UUID
-import javax.sql.DataSource
 
-class ReplicationStressTest {
+class ReplicationStressTest : BaseIntegrationTest() {
 
-    private lateinit var sourceDataSource: DataSource
-    private lateinit var targetDataSource: DataSource
     private lateinit var replicationService: ReplicationService
     private lateinit var mappingService: MappingServiceBase
     private lateinit var metadataReader: MetadataReader
@@ -34,14 +31,18 @@ class ReplicationStressTest {
         // Инициализируем метрики для возможности проверки счетчиков
         MetricsService.init()
 
-        sourceDataSource = HikariFactory.createDataSource(
-            jdbcUrl = "jdbc:postgresql://localhost:5431/source_db",
-            user = "user", password = "password", maxPoolSize = 10
-        )
-        targetDataSource = HikariFactory.createDataSource(
-            jdbcUrl = "jdbc:postgresql://localhost:5432/target_db",
-            user = "user", password = "password", maxPoolSize = 10
-        )
+        executeScript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                email TEXT,
+                region_id UUID
+            );
+            CREATE TABLE IF NOT EXISTS profiles (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(id),
+                bio TEXT
+            );
+        """.trimIndent())
 
         cleanOrphanedReplicationSlots()
 
@@ -93,8 +94,6 @@ class ReplicationStressTest {
         }
 
         MetricsService.shutdown()
-        (sourceDataSource as? com.zaxxer.hikari.HikariDataSource)?.close()
-        (targetDataSource as? com.zaxxer.hikari.HikariDataSource)?.close()
         shouldAutoInit = true
     }
 

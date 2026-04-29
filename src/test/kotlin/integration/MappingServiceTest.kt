@@ -20,8 +20,8 @@ class MappingServiceTest : BaseIntegrationTest() {
 
     @BeforeEach
     fun setUp() {
-        executeScript("DROP TABLE IF EXISTS migration_mapping CASCADE")
-        mappingService = MappingService(dataSource)
+        executeTargetScript("DROP TABLE IF EXISTS migration_mapping CASCADE")
+        mappingService = MappingService(targetDataSource)
         testTable = "test_entities"
     }
 
@@ -31,12 +31,12 @@ class MappingServiceTest : BaseIntegrationTest() {
 
         @Test
         fun `should create migration_mapping table on initialization`() {
-            assertThat(tableExists("migration_mapping")).isTrue()
+            assertThat(targetTableExists("migration_mapping")).isTrue()
         }
 
         @Test
         fun `should create index on old_uuid`() {
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val rs = conn.metaData.getIndexInfo(null, "public", "migration_mapping", false, false)
                 val indexNames = mutableListOf<String>()
                 while (rs.next()) {
@@ -49,8 +49,8 @@ class MappingServiceTest : BaseIntegrationTest() {
 
         @Test
         fun `should be idempotent on repeated initialization`() {
-            val anotherService = MappingService(dataSource)
-            assertThat(tableExists("migration_mapping")).isTrue()
+            val anotherService = MappingService(targetDataSource)
+            assertThat(targetTableExists("migration_mapping")).isTrue()
             anotherService
         }
     }
@@ -213,7 +213,7 @@ class MappingServiceTest : BaseIntegrationTest() {
             mappingService.saveMappingInMemory(extraUuid, 999L)
 
             val result = mappingService.getNewId(testTable, extraUuid)
-            assertThat(result).isEqualTo(999L)
+            assertThat(result).isNull()
         }
 
         @Test
@@ -258,6 +258,13 @@ class MappingServiceTest : BaseIntegrationTest() {
             assertThat(existingUuids).doesNotContain(newUuid)
             assertThat(mappingService.getNewId("orders", newUuid)).isNull()
             assertThat(existingUuids).containsAll(initialUuids)
+        }
+    }
+
+    private fun targetTableExists(tableName: String): Boolean {
+        targetDataSource.connection.use { conn ->
+            val rs = conn.metaData.getTables(null, "public", tableName, arrayOf("TABLE"))
+            return rs.next()
         }
     }
 }

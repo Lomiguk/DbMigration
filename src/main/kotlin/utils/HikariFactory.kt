@@ -4,6 +4,7 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import io.micrometer.core.instrument.MeterRegistry
 import logging.MetricsService
+import java.sql.Statement
 import java.util.UUID
 import javax.sql.DataSource
 
@@ -45,18 +46,22 @@ object HikariFactory {
      * Batch-сохранение маппингов UUID → BIGINT в таблицу migration_mapping.
      * Создаёт своё соединение, делает commit и закрывает его.
      */
-    fun saveMappingBatch(ds: DataSource, tableName: String, mappings: Map<UUID, Long>) {
+    fun saveMappingBatch(ds: DataSource, tableName: String, mappings: Map<UUID, Long>): Map<UUID, Long> {
+        if (mappings.isEmpty()) return emptyMap()
+
+        val mappingEntries = mappings.entries.toList()
         ds.connection.use { conn ->
             conn.autoCommit = false
             conn.prepareStatement(SAVE_MAPPING_SQL).use { pstmt ->
-                mappings.forEach { (uuid, newId) ->
+                mappingEntries.forEach { (uuid, newId) ->
                     pstmt.setString(1, tableName)
                     pstmt.setObject(2, uuid)
                     pstmt.setLong(3, newId)
                     pstmt.addBatch()
                 }
-                pstmt.executeBatch()
+                val results = pstmt.executeBatch()
                 conn.commit()
+                return insertedMappings(mappingEntries, results)
             }
         }
     }
@@ -65,16 +70,30 @@ object HikariFactory {
      * Batch-сохранение маппингов в существующем соединении (без commit).
      * Вызывающий сам управляет транзакцией.
      */
-    fun saveMappingBatchInConnection(conn: java.sql.Connection, tableName: String, mappings: Map<UUID, Long>) {
+    fun saveMappingBatchInConnection(conn: java.sql.Connection, tableName: String, mappings: Map<UUID, Long>): Map<UUID, Long> {
+        if (mappings.isEmpty()) return emptyMap()
+
+        val mappingEntries = mappings.entries.toList()
         conn.prepareStatement(SAVE_MAPPING_SQL).use { pstmt ->
-            mappings.forEach { (uuid, newId) ->
+            mappingEntries.forEach { (uuid, newId) ->
                 pstmt.setString(1, tableName)
                 pstmt.setObject(2, uuid)
                 pstmt.setLong(3, newId)
                 pstmt.addBatch()
             }
-            pstmt.executeBatch()
+            val results = pstmt.executeBatch()
+            return insertedMappings(mappingEntries, results)
         }
+    }
+
+    private fun insertedMappings(
+        mappingEntries: List<Map.Entry<UUID, Long>>,
+        results: IntArray
+    ): Map<UUID, Long> {
+        return mappingEntries
+            .zip(results.asIterable())
+            .filter { (_, result) -> result > 0 || result == Statement.SUCCESS_NO_INFO }
+            .associate { (entry, _) -> entry.key to entry.value }
     }
 
     /**

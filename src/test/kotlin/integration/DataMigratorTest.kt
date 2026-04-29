@@ -26,14 +26,14 @@ class DataMigratorTest : BaseIntegrationTest() {
     @BeforeEach
     fun setUp() {
         cleanupTables("order_items", "profiles", "orders", "products", "users")
-        executeScript("DROP TABLE IF EXISTS migration_mapping CASCADE")
+        executeTargetScript("DROP TABLE IF EXISTS migration_mapping CASCADE")
         executeScript(MigrationTestFixtures.SOURCE_SCHEMA_UUID)
-        executeScript(MigrationTestFixtures.TARGET_SCHEMA_BIGINT)
+        executeTargetScript(MigrationTestFixtures.TARGET_SCHEMA_BIGINT)
 
-        sourceMetadataReader = MetadataReader(dataSource)
-        targetMetadataReader = MetadataReader(dataSource)
-        mappingService = MappingServiceFactory.create(dataSource, MappingStrategy.EAGER, 500_000)
-        dataMigrator = DataMigrator(dataSource, dataSource, mappingService, sourceMetadataReader)
+        sourceMetadataReader = MetadataReader(sourceDataSource)
+        targetMetadataReader = MetadataReader(targetDataSource)
+        mappingService = MappingServiceFactory.create(targetDataSource, MappingStrategy.EAGER, 500_000)
+        dataMigrator = DataMigrator(sourceDataSource, targetDataSource, mappingService, sourceMetadataReader)
     }
 
     @Nested
@@ -45,10 +45,10 @@ class DataMigratorTest : BaseIntegrationTest() {
             val tables = listOf("users", "products", "orders")
             dataMigrator.createTargetSchema(tables)
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val rs = conn.metaData.getColumns(null, "public", "users", "id")
                 assertThat(rs.next()).isTrue()
-                assertThat(rs.getString("TYPE_NAME")).isEqualTo("int8")
+                assertThat(rs.getString("TYPE_NAME")).isEqualTo("bigserial")
             }
         }
 
@@ -57,7 +57,7 @@ class DataMigratorTest : BaseIntegrationTest() {
             val tables = listOf("profiles")
             dataMigrator.createTargetSchema(tables)
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val rs = conn.metaData.getColumns(null, "public", "profiles", "user_id")
                 assertThat(rs.next()).isTrue()
                 assertThat(rs.getString("TYPE_NAME")).isEqualTo("int8")
@@ -69,7 +69,7 @@ class DataMigratorTest : BaseIntegrationTest() {
             val tables = listOf("users")
             dataMigrator.createTargetSchema(tables)
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val rs = conn.metaData.getColumns(null, "public", "users", "email")
                 assertThat(rs.next()).isTrue()
                 assertThat(rs.getString("TYPE_NAME")).startsWith("varchar")
@@ -86,7 +86,7 @@ class DataMigratorTest : BaseIntegrationTest() {
             val userUuids = insertTestData()
             dataMigrator.migrateTable("users")
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val rs = conn.createStatement().executeQuery("SELECT COUNT(*) FROM users")
                 assertThat(rs.next()).isTrue()
                 assertThat(rs.getLong(1)).isEqualTo(3)
@@ -102,11 +102,12 @@ class DataMigratorTest : BaseIntegrationTest() {
         fun `should migrate data preserving FK relationships`() {
             val userUuids = insertTestData()
             insertProductsTestData()
+            insertOrdersTestData(userUuids)
             dataMigrator.migrateTable("users")
             dataMigrator.migrateTable("products")
             dataMigrator.migrateTable("orders")
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val rs = conn.createStatement().executeQuery(
                     "SELECT o.id, o.user_id FROM orders o LIMIT 1"
                 )
@@ -123,10 +124,10 @@ class DataMigratorTest : BaseIntegrationTest() {
         fun `should skip already migrated records`() {
             val userUuids = insertTestData()
             dataMigrator.migrateTable("users")
-            val initialCount = countRows("users")
+            val initialCount = countRowsTarget("users")
 
             dataMigrator.migrateTable("users")
-            assertThat(countRows("users")).isEqualTo(initialCount)
+            assertThat(countRowsTarget("users")).isEqualTo(initialCount)
         }
 
         @Test
@@ -135,13 +136,13 @@ class DataMigratorTest : BaseIntegrationTest() {
             val existingIds = setOf(userUuids.first())
             dataMigrator.migrateTable("users", existingIds)
 
-            assertThat(countRows("users")).isEqualTo(2)
+            assertThat(countRowsTarget("users")).isEqualTo(2)
         }
 
         @Test
         fun `should work correctly with empty table`() {
             dataMigrator.migrateTable("users")
-            assertThat(countRows("users")).isEqualTo(0)
+            assertThat(countRowsTarget("users")).isEqualTo(0)
         }
     }
 
@@ -154,7 +155,7 @@ class DataMigratorTest : BaseIntegrationTest() {
             val userUuids = insertTestData()
             dataMigrator.migrateTable("users")
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val rs = conn.createStatement().executeQuery(
                     "SELECT COUNT(*) FROM migration_mapping WHERE table_name = 'users'"
                 )
@@ -190,13 +191,13 @@ class DataMigratorTest : BaseIntegrationTest() {
                 dataMigrator.migrateTable(table)
             }
 
-            assertThat(countRows("users")).isEqualTo(3)
-            assertThat(countRows("products")).isEqualTo(2)
-            assertThat(countRows("profiles")).isEqualTo(2)
-            assertThat(countRows("orders")).isEqualTo(2)
-            assertThat(countRows("order_items")).isEqualTo(3)
+            assertThat(countRowsTarget("users")).isEqualTo(3)
+            assertThat(countRowsTarget("products")).isEqualTo(2)
+            assertThat(countRowsTarget("profiles")).isEqualTo(2)
+            assertThat(countRowsTarget("orders")).isEqualTo(2)
+            assertThat(countRowsTarget("order_items")).isEqualTo(3)
 
-            getConnection().use { conn ->
+            targetDataSource.connection.use { conn ->
                 val rs = conn.createStatement().executeQuery(
                     "SELECT COUNT(*) FROM migration_mapping"
                 )
@@ -209,7 +210,7 @@ class DataMigratorTest : BaseIntegrationTest() {
         fun `should support incremental migration`() {
             val userUuids1 = insertTestData()
             dataMigrator.migrateTable("users")
-            val firstMigrationCount = countRows("users")
+            val firstMigrationCount = countRowsTarget("users")
 
             executeScript("""
                 INSERT INTO users (email) VALUES 
@@ -220,7 +221,7 @@ class DataMigratorTest : BaseIntegrationTest() {
             val existingIds = mappingService.getAllMappedUuids("users")
             dataMigrator.migrateTable("users", existingIds)
 
-            assertThat(countRows("users")).isEqualTo(firstMigrationCount + 2)
+            assertThat(countRowsTarget("users")).isEqualTo(firstMigrationCount + 2)
         }
     }
 
@@ -247,6 +248,19 @@ class DataMigratorTest : BaseIntegrationTest() {
                     ('Product 1', 10.00),
                     ('Product 2', 20.00);
             """)
+        }
+    }
+
+    private fun insertOrdersTestData(userUuids: List<UUID>) {
+        getConnection().use { conn ->
+            val orderPstmt = conn.prepareStatement(
+                "INSERT INTO orders (user_id, total_amount, status) VALUES (?, ?, ?)"
+            )
+            orderPstmt.setObject(1, userUuids[0])
+            orderPstmt.setDouble(2, 100.0)
+            orderPstmt.setString(3, "COMPLETED")
+            orderPstmt.addBatch()
+            orderPstmt.executeBatch()
         }
     }
 
