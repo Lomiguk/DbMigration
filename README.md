@@ -37,6 +37,88 @@ docker compose up -d
 ./gradlew run --args="status"
 ```
 
+## Требования
+
+- JDK 17.
+- Docker и Docker Compose.
+- PostgreSQL logical replication для source БД. В локальном стенде она уже включена в `compose.yaml`.
+- Gradle Wrapper из репозитория: `./gradlew` для Linux/macOS или `.\gradlew.bat` для Windows.
+
+## Конфигурация
+
+По умолчанию приложение использует локальный стенд из `compose.yaml`:
+
+| Назначение | Host | Port | Database | User |
+|------------|------|------|----------|------|
+| Source DB | localhost | 5431 | source_db | user |
+| Target DB | localhost | 5432 | target_db | user |
+
+Создать пример конфигурационного файла:
+
+```bash
+./gradlew run --args="config-init"
+```
+
+Команда создаст `migration-config.yaml`. После редактирования его можно передать любой CLI-команде:
+
+```bash
+./gradlew run --args="copy --config migration-config.yaml"
+```
+
+## Основные команды CLI
+
+| Команда | Назначение |
+|---------|------------|
+| `config-init` | Создать пример `migration-config.yaml` |
+| `generate-data` | Сгенерировать тестовые данные в source БД |
+| `init` | Проанализировать source-схему и построить граф зависимостей |
+| `copy` | Выполнить первичную миграцию данных |
+| `copy --migrate-indexes` | Перенести реальные индексы из source в target |
+| `copy --create-fk-indexes` | Создать индексы на FK-колонках в target |
+| `sync` | Выполнить дельта-синхронизацию новых строк |
+| `replicate` | Применить изменения через WAL/CDC |
+| `replicate --continuous` | Запустить непрерывную WAL-репликацию |
+| `validate` | Проверить количество строк, FK и mapping |
+| `rollback` | Откатить миграцию |
+| `backup` | Управлять backup/restore |
+| `status` | Показать статус миграции и метрики |
+
+## Тестирование
+
+Unit-тесты не требуют Docker:
+
+```bash
+./gradlew test --tests unit.*
+```
+
+Интеграционные и benchmark-тесты используют Testcontainers, поэтому Docker должен быть запущен:
+
+```bash
+./gradlew test --tests integration.*
+./gradlew test --tests benchmark.RealtimeReplicationTest
+./gradlew benchmarkTest
+```
+
+## Локальные сервисы
+
+После `docker compose up -d` доступны:
+
+| Сервис | URL |
+|--------|-----|
+| Source PostgreSQL | `localhost:5431` |
+| Target PostgreSQL | `localhost:5432` |
+| Prometheus | `http://localhost:9090` |
+| Pushgateway | `http://localhost:9091` |
+| Grafana | `http://localhost:3000` (`admin` / `admin`) |
+
+## Ограничения и проверки перед production
+
+- Инструмент рассчитан на миграцию PostgreSQL-схем с UUID primary keys в target-схему с BIGINT/BIGSERIAL identifiers.
+- Перед production-запуском сделайте backup source/target БД.
+- После `copy` или `replicate` запускайте `validate`.
+- Для production-нагрузки предпочтительно использовать `copy --migrate-indexes`, чтобы перенести реальные индексы source-схемы.
+- `copy --create-fk-indexes` является опциональным режимом и создает индексы только по FK-колонкам.
+
 ## Документация
 
 | Документ | Описание |
