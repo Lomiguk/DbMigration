@@ -39,11 +39,10 @@ class ChangeCaptureTest : BaseIntegrationTest() {
             }
         }
 
-        MetricsService.registerCacheMetrics(mappingService)
-
         // 2. Разделяем Source и Target при инъекции зависимостей
         metadataReader = MetadataReader(sourceDataSource)
         mappingService = MappingServiceFactory.create(targetDataSource, MappingStrategy.EAGER, 500_000)
+        MetricsService.registerCacheMetrics(mappingService)
         dataMigrator = DataMigrator(sourceDataSource, targetDataSource, mappingService, metadataReader)
         changeCapture = ChangeCapture(dataMigrator, mappingService)
     }

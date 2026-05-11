@@ -86,6 +86,9 @@ class PerformanceBenchmarkTest : BaseIntegrationTest() {
             val batchSize = 1000
             val batches = 10
 
+            createUuidTable(0)
+            createBigintTable(0)
+
             val uuidStartTime = System.currentTimeMillis()
             repeat(batches) {
                 insertUuidBatch(batchSize)

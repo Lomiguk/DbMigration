@@ -2,11 +2,11 @@ package integration
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import org.junit.jupiter.api.BeforeEach
 import org.testcontainers.containers.PostgreSQLContainer
 import java.sql.Connection
 import javax.sql.DataSource
 
-// ВАЖНО: Никаких аннотаций @Testcontainers и @Container!
 abstract class BaseIntegrationTest {
 
     companion object {
@@ -60,6 +60,30 @@ abstract class BaseIntegrationTest {
     val dataSource: DataSource get() = sourceDataSource
 
     fun getConnection(): Connection = sourceDataSource.connection
+
+    @BeforeEach
+    fun resetPublicSchemas() {
+        listOf(sourceDataSource, targetDataSource).forEach { ds ->
+            ds.connection.use { conn ->
+                conn.createStatement().execute(
+                    """
+                    DO $$
+                    DECLARE
+                        table_record RECORD;
+                    BEGIN
+                        FOR table_record IN
+                            SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+                        LOOP
+                            EXECUTE 'DROP TABLE IF EXISTS '
+                                || quote_ident(table_record.tablename)
+                                || ' CASCADE';
+                        END LOOP;
+                    END $$;
+                    """.trimIndent()
+                )
+            }
+        }
+    }
 
     fun countRows(tableName: String): Long {
         sourceDataSource.connection.use { conn ->

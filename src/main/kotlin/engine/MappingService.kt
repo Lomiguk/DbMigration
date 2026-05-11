@@ -47,7 +47,7 @@ class MappingService(
                         new_id BIGINT NOT NULL,
                         PRIMARY KEY (table_name, old_uuid)
                     );
-                    CREATE INDEX IF NOT EXISTS idx_mapping_old_uuid ON migration_mapping(old_uuid);
+                    CREATE INDEX IF NOT EXISTS idx_mapping_uuid ON migration_mapping(old_uuid);
                 """.trimIndent())
             }
         }
@@ -105,13 +105,14 @@ class MappingService(
     }
 
     override fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>, conn: java.sql.Connection?) {
-        "save_mapping_batch_$tableName".logConnectionDetailed {
+        val insertedMappings = "save_mapping_batch_$tableName".logConnectionDetailed {
             HikariFactory.saveMappingBatch(targetDataSource, tableName, mappings)
         }
-        cache.putAll(mappings)
+        cache.putAll(insertedMappings)
     }
 
     override fun saveMappingInMemory(oldUuid: UUID, newId: Long) {
+        if (cacheLimit > 0 && cache.estimatedSize() >= cacheLimit) return
         cache.put(oldUuid, newId)
     }
 
@@ -121,7 +122,17 @@ class MappingService(
     }
 
     override fun getAllMappedUuids(tableName: String): Set<UUID> {
-        return cache.asMap().keys.toSet()
+        targetDataSource.connection.use { conn ->
+            conn.prepareStatement("SELECT old_uuid FROM migration_mapping WHERE table_name = ?").use { pstmt ->
+                pstmt.setString(1, tableName)
+                val rs = pstmt.executeQuery()
+                val result = mutableSetOf<UUID>()
+                while (rs.next()) {
+                    result.add(rs.getObject("old_uuid") as UUID)
+                }
+                return result
+            }
+        }
     }
 
     override fun getCacheStats(): Map<String, Any> {
