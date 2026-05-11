@@ -84,8 +84,20 @@ class MigrateResumeCommand : MigrateCommand(
 
             // Запуск миграции
             ui.printSectionTitle("Возобновление миграции")
-            val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, 10_000_000)
-            val migrator = DataMigrator(sourceDs, targetDs, mappingService, reader, stateRepository, migrationId)
+            val mappingService = MappingServiceFactory.create(
+                targetDs,
+                MappingStrategy.EAGER,
+                10_000_000
+            )
+            MetricsService.registerCacheMetrics(mappingService)
+            val migrator = DataMigrator(
+                sourceDs,
+                targetDs,
+                mappingService,
+                reader,
+                stateRepository,
+                migrationId
+            )
 
             var totalRows = 0L
             var totalDuration = 0L

@@ -65,8 +65,11 @@ dependencies {
     // MockK - мокирование для Kotlin
     testImplementation("io.mockk:mockk:1.13.8")
 
+    implementation("com.github.ben-manes.caffeine:caffeine:3.1.8")
+
     // Kotlin coroutines test
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
+
 
     testImplementation(kotlin("test"))
 }
@@ -77,6 +80,9 @@ tasks.withType<Test> {
     testLogging {
         events("passed", "skipped", "failed")
     }
+
+    environment("DOCKER_HOST", "tcp://localhost:2375")
+    environment("TESTCONTAINERS_RYUK_DISABLED", "true")
 }
 
 tasks.register<Test>("benchmarkTest") {
@@ -95,6 +101,9 @@ tasks.register<Test>("benchmarkTest") {
         events("passed", "skipped", "failed")
         showStandardStreams = true
     }
+
+    environment("DOCKER_HOST", "tcp://localhost:2375")
+    environment("TESTCONTAINERS_RYUK_DISABLED", "true")
 }
 
 tasks.test {

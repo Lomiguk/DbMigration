@@ -4,6 +4,7 @@ import core.MetadataReader
 import engine.DataMigrator
 import engine.MappingServiceFactory
 import engine.MappingStrategy
+import logging.MetricsService
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Nested
@@ -37,6 +38,8 @@ class ChangeCaptureTest : BaseIntegrationTest() {
                 conn.createStatement().execute(sql.trim())
             }
         }
+
+        MetricsService.registerCacheMetrics(mappingService)
 
         // 2. Разделяем Source и Target при инъекции зависимостей
         metadataReader = MetadataReader(sourceDataSource)

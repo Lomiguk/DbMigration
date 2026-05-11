@@ -1,33 +1,30 @@
 package integration
 
-import org.junit.jupiter.api.AfterAll
-import org.junit.jupiter.api.BeforeAll
-import org.testcontainers.containers.PostgreSQLContainer
-import org.testcontainers.junit.jupiter.Container
-import org.testcontainers.junit.jupiter.Testcontainers
-import java.sql.Connection
-import javax.sql.DataSource
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import org.testcontainers.containers.PostgreSQLContainer
+import java.sql.Connection
+import javax.sql.DataSource
 
-@Testcontainers
+// ВАЖНО: Никаких аннотаций @Testcontainers и @Container!
 abstract class BaseIntegrationTest {
 
     companion object {
-        @Container
-        @JvmField
-        val sourcePostgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:15-alpine")
-            .withDatabaseName("source_test_db")
-            .withUsername("test")
-            .withPassword("test")
-            .withCommand("postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10")
+        // Определяем контейнер-источник (Source)
+        private val sourcePostgres = PostgreSQLContainer<Nothing>("postgres:15-alpine").apply {
+            withDatabaseName("source_test_db")
+            withUsername("test")
+            withPassword("test")
+            // Включаем логическую репликацию
+            withCommand("postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10")
+        }
 
-        @Container
-        @JvmField
-        val targetPostgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:15-alpine")
-            .withDatabaseName("target_test_db")
-            .withUsername("test")
-            .withPassword("test")
+        // Определяем целевой контейнер (Target)
+        private val targetPostgres = PostgreSQLContainer<Nothing>("postgres:15-alpine").apply {
+            withDatabaseName("target_test_db")
+            withUsername("test")
+            withPassword("test")
+        }
 
         private var _sourceDs: HikariDataSource? = null
         private var _targetDs: HikariDataSource? = null
@@ -35,15 +32,20 @@ abstract class BaseIntegrationTest {
         val globalSourceDataSource: DataSource get() = _sourceDs ?: throw IllegalStateException("Source DS null")
         val globalTargetDataSource: DataSource get() = _targetDs ?: throw IllegalStateException("Target DS null")
 
-        @BeforeAll
-        @JvmStatic
-        fun setupGlobal() {
+        // Блок init выполняется ровно 1 раз при загрузке класса в JVM
+        init {
+            // 1. Стартуем контейнеры (они будут жить, пока идут тесты)
+            sourcePostgres.start()
+            targetPostgres.start()
+
+            // 2. Инициализируем пулы с динамическими портами Testcontainers
             _sourceDs = HikariDataSource(HikariConfig().apply {
                 jdbcUrl = sourcePostgres.jdbcUrl
                 username = sourcePostgres.username
                 password = sourcePostgres.password
                 maximumPoolSize = 10
             })
+
             _targetDs = HikariDataSource(HikariConfig().apply {
                 jdbcUrl = targetPostgres.jdbcUrl
                 username = targetPostgres.username
@@ -51,18 +53,10 @@ abstract class BaseIntegrationTest {
                 maximumPoolSize = 10
             })
         }
-
-        @AfterAll
-        @JvmStatic
-        fun teardownGlobal() {
-            _sourceDs?.close()
-            _targetDs?.close()
-        }
     }
 
     val sourceDataSource: DataSource get() = globalSourceDataSource
     val targetDataSource: DataSource get() = globalTargetDataSource
-
     val dataSource: DataSource get() = sourceDataSource
 
     fun getConnection(): Connection = sourceDataSource.connection

@@ -55,6 +55,7 @@ class MigrateSyncCommand : MigrateCommand(
             val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, 10_000_000)
             ui.printInfo("Предзагрузка маппингов для синхронизации...")
             mappingService.preloadAllMappings(tables)
+            MetricsService.registerCacheMetrics(mappingService)
             val migrator = DataMigrator(sourceDs, targetDs, mappingService, reader)
             val syncEngine = ChangeCapture(migrator, mappingService)
 

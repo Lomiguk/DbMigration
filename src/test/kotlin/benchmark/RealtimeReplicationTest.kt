@@ -21,7 +21,7 @@ class RealtimeReplicationTest : BaseIntegrationTest() {
     private lateinit var validator: DataIntegrityValidator
 
     // Сохраняем ссылку на сервис, чтобы сбросить кэш перед валидацией
-    private lateinit var mappingService: Any
+    private lateinit var mappingService: engine.MappingServiceBase
 
     @BeforeEach
     fun setUp() {
@@ -67,6 +67,7 @@ class RealtimeReplicationTest : BaseIntegrationTest() {
         targetDataSource.connection.use { it.createStatement().execute("DROP TABLE IF EXISTS migration_mapping CASCADE") }
 
         mappingService = MappingServiceFactory.create(targetDataSource, MappingStrategy.HYBRID, 500_000)
+        MetricsService.registerCacheMetrics(mappingService)
 
         replicationService = ReplicationService(
             sourceDataSource = sourceDataSource,

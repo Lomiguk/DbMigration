@@ -70,7 +70,8 @@ class MigrationUi(private val terminal: Terminal = Terminal()) {
         totalTables: Int,
         totalRows: Long,
         totalDuration: Long,
-        success: Boolean
+        success: Boolean,
+        cacheStats: Map<String, Any>? = null // <-- ДОБАВЛЕН НОВЫЙ ПАРАМЕТР
     ) {
         terminal.println()
         terminal.println("=".repeat(60))
@@ -89,6 +90,18 @@ class MigrationUi(private val terminal: Terminal = Terminal()) {
         if (totalDuration > 0) {
             val avgSpeed = (totalRows * 1000.0 / totalDuration).roundToInt()
             terminal.println("Average speed: $avgSpeed rec/sec")
+        }
+
+        if (cacheStats != null) {
+            terminal.println("-".repeat(60))
+            terminal.println("CACHE METRICS (W-TinyLFU Caffeine):")
+            terminal.println("Final Cache Size: ${cacheStats["cache_size"]} items")
+
+            val hitRate = cacheStats["hit_rate"] as? Double ?: 0.0
+            terminal.println("Cache Hit Rate:   ${String.format("%.2f", hitRate * 100)} %")
+
+            val evictions = cacheStats["eviction_count"] as? Long ?: 0L
+            terminal.println("Eviction Count:   $evictions items (Memory protected!)")
         }
 
         terminal.println("=".repeat(60))

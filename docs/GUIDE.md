@@ -587,3 +587,10 @@ export PATH=$PATH:/usr/lib/postgresql/15/bin
 # Указать migration-id явно
 ./gradlew run --args="rollback --table orders --migration-id migration_20260331"
 ```
+
+### Out of Memory (JVM Heap Space)
+Если вы видите рост памяти, убедитесь, что вы используете ограничение кэша.
+**Решение:**
+Используйте флаг `--cache-limit`. Для большинства миграций достаточно 100 000 - 300 000 записей.
+
+`./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000"`

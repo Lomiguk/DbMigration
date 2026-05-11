@@ -83,7 +83,8 @@ class MigrateCopyCommand : MigrateCommand(
                 mappingService.preloadAllMappings(migrationOrder)
                 ui.printInfo("Preloaded in ${System.currentTimeMillis() - preloadStart}ms")
             }
-            
+
+            MetricsService.registerCacheMetrics(mappingService)
             val migrator = DataMigrator(sourceDs, targetDs, mappingService, reader)
 
             if (!config.dryRun) {

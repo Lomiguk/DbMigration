@@ -1,5 +1,6 @@
 package logging
 
+import engine.MappingServiceBase
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Timer
@@ -164,5 +165,22 @@ object MetricsService {
         }
             .description("Replication lag in bytes")
             .register(registry)
+    }
+
+    fun registerCacheMetrics(mappingService: MappingServiceBase) {
+        // Регистрируем размер кэша
+        Gauge.builder("mapping_cache_size", mappingService) {
+            (it.getCacheStats()["cache_size"] as Long).toDouble()
+        }.register(registry)
+
+        // Регистрируем Hit Rate (коэффициент попаданий)
+        Gauge.builder("mapping_cache_hit_rate", mappingService) {
+            it.getCacheStats()["hit_rate"] as Double
+        }.register(registry)
+
+        // Регистрируем количество вытесненных элементов (защита от OOM)
+        Gauge.builder("mapping_cache_evictions", mappingService) {
+            (it.getCacheStats()["eviction_count"] as Long).toDouble()
+        }.register(registry)
     }
 }

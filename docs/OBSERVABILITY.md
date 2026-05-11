@@ -50,15 +50,18 @@
 
 ### Полезные PromQL запросы
 
-| Метрика | PromQL | Тип графика |
-|---------|--------|-------------|
-| **Всего мигрировано строк** | `sum(migration_rows_total) by (table)` | Bar gauge / Stat |
-| **Скорость миграции (строк/сек)** | `rate(migration_rows_total[1m])` | Time series |
-| **Размер кэша маппинга** | `mapping_cache_size` | Stat |
-| **Среднее время батча (insert)** | `rate(migration_batch_duration_seconds_sum{operation="insert"}[1m]) / rate(migration_batch_duration_seconds_count{operation="insert"}[1m])` | Time series |
-| **Среднее время батча (mapping)** | `rate(migration_batch_duration_seconds_sum{operation="mapping"}[1m]) / rate(migration_batch_duration_seconds_count{operation="mapping"}[1m])` | Time series |
-| **HikariCP соединения** | `hikaricp_connections_active`, `hikaricp_connections_idle`, `hikaricp_connections_pending` | Time series |
-| **Отставание WAL репликации** | `replication_lag_bytes` | Time series |
+| Метрика                                                                                  | PromQL                                                                                                                                        | Тип графика |
+|------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|-------------|
+| **Всего мигрировано строк**                                                              | `sum(migration_rows_total) by (table)`                                                                                                        | Bar gauge / Stat |
+| **Скорость миграции (строк/сек)**                                                        | `rate(migration_rows_total[1m])`                                                                                                              | Time series |
+| **Размер кэша маппинга**                                                                 | `mapping_cache_size`                                                                                                                          | Stat |
+| **Среднее время батча (insert)**                                                         | `rate(migration_batch_duration_seconds_sum{operation="insert"}[1m]) / rate(migration_batch_duration_seconds_count{operation="insert"}[1m])`   | Time series |
+| **Среднее время батча (mapping)**                                                        | `rate(migration_batch_duration_seconds_sum{operation="mapping"}[1m]) / rate(migration_batch_duration_seconds_count{operation="mapping"}[1m])` | Time series |
+| **HikariCP соединения**                                                                  | `hikaricp_connections_active`, `hikaricp_connections_idle`, `hikaricp_connections_pending`                                                    | Time series |
+| **Отставание WAL репликации**                                                            | `replication_lag_bytes`                                                                                                                       | Time series |
+| **Эффективность кэша (0.0 - 1.0). Позволяет оценить пользу HYBRID стратегии.**           | `mapping_cache_hit_rate`                                                                                                                      |	Gauge |
+| *Количество ключей, удаленных для защиты памяти. Сигнализирует о достижении лимита RAM.* | `mapping_cache_evictions`                                                                                                                     | Counter
+| *Реальное количество объектов в оперативной памяти.*                                     | `mapping_cache_size`                                                                                                                          | Gauge
 
 **Пороговые значения:**
 - `mapping_cache_size` не должен превышать `cacheLimit`

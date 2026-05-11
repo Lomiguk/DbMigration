@@ -21,7 +21,7 @@ class MappingServiceTest : BaseIntegrationTest() {
     @BeforeEach
     fun setUp() {
         executeTargetScript("DROP TABLE IF EXISTS migration_mapping CASCADE")
-        mappingService = MappingService(targetDataSource)
+        mappingService = MappingService(targetDataSource, 500_000L)
         testTable = "test_entities"
     }
 
@@ -49,7 +49,7 @@ class MappingServiceTest : BaseIntegrationTest() {
 
         @Test
         fun `should be idempotent on repeated initialization`() {
-            val anotherService = MappingService(targetDataSource)
+            val anotherService = MappingService(targetDataSource, 500_000L)
             assertThat(targetTableExists("migration_mapping")).isTrue()
             anotherService
         }
