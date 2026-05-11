@@ -1,5 +1,6 @@
 package engine
 
+import core.ForeignKeyColumn
 import core.MetadataReader
 import logging.MetricsService
 import logging.PerformanceLogger
@@ -17,6 +18,11 @@ class DataMigrator(
     private val stateRepository: StateRepository? = null,
     private val migrationId: String? = null
 ) {
+    private data class PendingRow(
+        val oldPk: UUID,
+        val values: Map<String, Any?>
+    )
+
     fun createTargetSchema(tables: List<String>) {
         println(">>> Шаг 2.2: Создание чистой целевой схемы (только BIGINT)...")
         targetDataSource.connection.use { targetConn ->
@@ -184,7 +190,7 @@ class DataMigrator(
                 val sql = "INSERT INTO $tableName (${columns.joinToString(", ")}) VALUES ($placeholders)"
                 val preparedStatement = targetConn.prepareStatement(sql, RETURN_GENERATED_KEYS)
 
-                val currentBatchOldUuids = mutableListOf<UUID>()
+                val currentBatchRows = mutableListOf<PendingRow>()
                 var newRecordsInTable: Long = 0L
                 var currentBatchNumber: Long = 0L
                 var lastUuid: UUID? = null
@@ -198,27 +204,14 @@ class DataMigrator(
                     }
 
                     if (existingIds.contains(oldPk)) continue
-                    if (mappingService.getNewId(tableName, oldPk) != null) continue
 
-                    currentBatchOldUuids.add(oldPk)
+                    currentBatchRows.add(PendingRow(oldPk, columns.associateWith { col -> rs.getObject(col) }))
                     newRecordsInTable++
                     lastUuid = oldPk
 
-                    columns.forEachIndexed { index, col ->
-                        val fk = foreignKeys.find { it.columnName == col }
-                        val value = rs.getObject(col)
-                        if (fk != null && value is UUID) {
-                            val preCreatedFTableId = mappingService.getNewId(fk.refTable, value)
-                            preparedStatement.setObject(index + 1, preCreatedFTableId)
-                        } else {
-                            preparedStatement.setObject(index + 1, value)
-                        }
-                    }
-                    preparedStatement.addBatch()
-
                     if (newRecordsInTable % batchSize == 0L) {
                         currentBatchNumber++
-                        processBatch(tableName, preparedStatement, currentBatchOldUuids, currentBatchNumber)
+                        processBatch(tableName, preparedStatement, columns, foreignKeys, currentBatchRows, currentBatchNumber)
                         targetConn.commit()
 
                         // Сохранение прогресса для возможности resume
@@ -226,13 +219,13 @@ class DataMigrator(
                             stateRepository?.saveProgress(mid, tableName, newRecordsInTable, lastUuid, currentBatchNumber)
                         }
 
-                        currentBatchOldUuids.clear()
+                        currentBatchRows.clear()
                     }
                 }
 
-                if (currentBatchOldUuids.isNotEmpty()) {
+                if (currentBatchRows.isNotEmpty()) {
                     currentBatchNumber++
-                    processBatch(tableName, preparedStatement, currentBatchOldUuids, currentBatchNumber)
+                    processBatch(tableName, preparedStatement, columns, foreignKeys, currentBatchRows, currentBatchNumber)
                     targetConn.commit()
 
                     migrationId?.let { mid ->
@@ -258,10 +251,27 @@ class DataMigrator(
     private fun processBatch(
         tableName: String,
         preparedStatement: PreparedStatement,
-        oldUuids: List<UUID>,
+        columns: List<String>,
+        foreignKeys: List<ForeignKeyColumn>,
+        rows: List<PendingRow>,
         batchNumber: Long
     ) {
         val batchStart = System.currentTimeMillis()
+        val foreignKeysByColumn = foreignKeys.associateBy { it.columnName }
+        val mappedForeignKeys = resolveForeignKeys(foreignKeysByColumn, rows)
+
+        rows.forEach { row ->
+            columns.forEachIndexed { index, col ->
+                val value = row.values[col]
+                val fk = foreignKeysByColumn[col]
+                if (fk != null && value is UUID) {
+                    preparedStatement.setObject(index + 1, mappedForeignKeys[fk.refTable]?.get(value))
+                } else {
+                    preparedStatement.setObject(index + 1, value)
+                }
+            }
+            preparedStatement.addBatch()
+        }
 
         // Замер INSERT через Micrometer Timer
         val insertTimer = MetricsService.getMigrationBatchTimer(tableName, "insert")
@@ -277,16 +287,14 @@ class DataMigrator(
         var i = 0
         while (generatedKeys.next()) {
             val newId = generatedKeys.getLong(1)
-            val oldUuid = oldUuids[i++]
+            val oldUuid = rows[i++].oldPk
             batchMappings[oldUuid] = newId
-
-            mappingService.saveMappingInMemory(oldUuid, newId)
         }
 
         // Замер MAPPING через Micrometer Timer
         val mappingTimer = MetricsService.getMigrationBatchTimer(tableName, "mapping")
         val mappingDuration = mappingTimer.recordCallable<Long> {
-            mappingService.saveMappingBatch(tableName, batchMappings)
+            mappingService.saveMappingBatch(tableName, batchMappings, preparedStatement.connection)
             System.currentTimeMillis() - batchStart
         }!!
 
@@ -294,13 +302,13 @@ class DataMigrator(
 
         // Increment counter для успешно мигрированных строк
         val rowsCounter = MetricsService.getMigrationRowsCounter(tableName)
-        rowsCounter.increment(oldUuids.size.toDouble())
+        rowsCounter.increment(rows.size.toDouble())
 
         // Логирование метрик (legacy CSV — deprecated)
         PerformanceLogger.logBatch(
             tableName = tableName,
             batchNumber = batchNumber,
-            totalRecords = oldUuids.size.toLong(),
+            totalRecords = rows.size.toLong(),
             insertDuration = insertDuration,
             mappingDuration = mappingDuration,
             commitDuration = 0,
@@ -310,8 +318,28 @@ class DataMigrator(
         PerformanceLogger.logMapping(
             tableName = tableName,
             batchNumber = batchNumber,
-            recordsSaved = oldUuids.size.toLong(),
+            recordsSaved = rows.size.toLong(),
             durationMs = mappingDuration
         )
+    }
+
+    private fun resolveForeignKeys(
+        foreignKeysByColumn: Map<String, ForeignKeyColumn>,
+        rows: List<PendingRow>
+    ): Map<String, Map<UUID, Long>> {
+        val uuidsByRefTable = mutableMapOf<String, MutableSet<UUID>>()
+
+        rows.forEach { row ->
+            foreignKeysByColumn.forEach { (columnName, fk) ->
+                val value = row.values[columnName]
+                if (value is UUID) {
+                    uuidsByRefTable.getOrPut(fk.refTable) { mutableSetOf() }.add(value)
+                }
+            }
+        }
+
+        return uuidsByRefTable.mapValues { (refTable, uuids) ->
+            mappingService.getNewIds(refTable, uuids)
+        }
     }
 }

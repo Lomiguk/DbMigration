@@ -6,6 +6,7 @@ import config.MigrateCommand
 import core.DependencyResolver
 import core.MetadataReader
 import engine.DataMigrator
+import engine.HybridTableSelector
 import engine.MappingServiceFactory
 import engine.MappingStrategy
 import logging.MetricsService
@@ -52,9 +53,16 @@ class MigrateSyncCommand : MigrateCommand(
 
             // Получение количества уже мигрированных записей
             ui.printInfo("Анализ текущего состояния...")
-            val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, 10_000_000)
-            ui.printInfo("Предзагрузка маппингов для синхронизации...")
-            mappingService.preloadAllMappings(tables)
+            val mappingService = MappingServiceFactory.create(targetDs, config.mappingStrategy, config.cacheLimit)
+            if (config.mappingStrategy == MappingStrategy.HYBRID) {
+                val pinnedTables = HybridTableSelector.selectPinnedTables(sourceDs, migrationOrder, config.cacheLimit)
+                mappingService.configurePinnedTables(pinnedTables)
+                ui.printInfo("HYBRID pinned tables: ${pinnedTables.joinToString(", ").ifBlank { "none" }}")
+            }
+            if (config.mappingStrategy == MappingStrategy.EAGER || config.mappingStrategy == MappingStrategy.HYBRID) {
+                ui.printInfo("Предзагрузка маппингов для синхронизации...")
+                mappingService.preloadAllMappings(tables)
+            }
             MetricsService.registerCacheMetrics(mappingService)
             val migrator = DataMigrator(sourceDs, targetDs, mappingService, reader)
             val syncEngine = ChangeCapture(migrator, mappingService)
@@ -106,4 +114,5 @@ class MigrateSyncCommand : MigrateCommand(
             targetDs?.close()
         }
     }
+
 }

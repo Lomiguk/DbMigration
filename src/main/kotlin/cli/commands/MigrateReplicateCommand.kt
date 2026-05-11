@@ -6,7 +6,10 @@ import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.mordant.terminal.Terminal
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
+import core.MetadataReader
+import engine.HybridTableSelector
 import engine.MappingServiceFactory
+import engine.MappingStrategy
 import logging.MetricsService
 import replication.ReplicationService
 import replication.ReplicationConfig
@@ -57,6 +60,16 @@ class MigrateReplicateCommand : MigrateCommand(
                 strategy = config.mappingStrategy,
                 cacheLimit = config.cacheLimit
             )
+            val tables = MetadataReader(sourceDs).getAllTablesWithUuidPk()
+            if (config.mappingStrategy == MappingStrategy.HYBRID) {
+                val pinnedTables = HybridTableSelector.selectPinnedTables(sourceDs, tables, config.cacheLimit)
+                mappingService.configurePinnedTables(pinnedTables)
+                ui.printInfo("HYBRID pinned tables: ${pinnedTables.joinToString(", ").ifBlank { "none" }}")
+            }
+            if (config.mappingStrategy == MappingStrategy.EAGER || config.mappingStrategy == MappingStrategy.HYBRID) {
+                ui.printInfo("Preloading mappings (${config.mappingStrategy} strategy)...")
+                mappingService.preloadAllMappings(tables)
+            }
             val replConfig = ReplicationConfig(
                 slotName = slotName,
                 temporary = temporary,
@@ -122,4 +135,5 @@ class MigrateReplicateCommand : MigrateCommand(
             targetDs?.close()
         }
     }
+
 }

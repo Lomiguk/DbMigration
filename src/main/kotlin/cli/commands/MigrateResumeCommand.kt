@@ -6,6 +6,7 @@ import config.MigrateCommand
 import core.DependencyResolver
 import core.MetadataReader
 import engine.DataMigrator
+import engine.HybridTableSelector
 import engine.MappingServiceFactory
 import engine.MappingStrategy
 import logging.MetricsService
@@ -86,9 +87,18 @@ class MigrateResumeCommand : MigrateCommand(
             ui.printSectionTitle("Возобновление миграции")
             val mappingService = MappingServiceFactory.create(
                 targetDs,
-                MappingStrategy.EAGER,
-                10_000_000
+                config.mappingStrategy,
+                config.cacheLimit
             )
+            if (config.mappingStrategy == MappingStrategy.HYBRID) {
+                val pinnedTables = HybridTableSelector.selectPinnedTables(sourceDs, migrationOrder, config.cacheLimit)
+                mappingService.configurePinnedTables(pinnedTables)
+                ui.printInfo("HYBRID pinned tables: ${pinnedTables.joinToString(", ").ifBlank { "none" }}")
+            }
+            if (config.mappingStrategy == MappingStrategy.EAGER || config.mappingStrategy == MappingStrategy.HYBRID) {
+                ui.printInfo("Preloading mappings (${config.mappingStrategy} strategy)...")
+                mappingService.preloadAllMappings(migrationOrder)
+            }
             MetricsService.registerCacheMetrics(mappingService)
             val migrator = DataMigrator(
                 sourceDs,
@@ -144,4 +154,5 @@ class MigrateResumeCommand : MigrateCommand(
             return if (rs.next()) rs.getLong(1) else 0L
         }
     }
+
 }

@@ -175,7 +175,7 @@
 
 ```bash
 docker ps
-docker-compose up -d
+docker compose up -d
 ```
 
 ### "Connection timeout"

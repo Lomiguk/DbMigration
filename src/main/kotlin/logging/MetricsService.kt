@@ -69,6 +69,40 @@ object MetricsService {
         }
     }
 
+    private val _mappingDbLookupCounters = mutableMapOf<String, Counter>()
+    private val _mappingDbLookupFoundCounters = mutableMapOf<String, Counter>()
+    private val _mappingDbLookupTimers = mutableMapOf<String, Timer>()
+
+    fun recordMappingDbLookup(strategy: String, tableName: String, durationMs: Long, found: Boolean) {
+        val key = "$strategy:$tableName"
+
+        _mappingDbLookupCounters.getOrPut(key) {
+            Counter.builder("mapping_db_lookup_total")
+                .description("Total mapping database lookups caused by cache misses")
+                .tag("strategy", strategy)
+                .tag("table", tableName)
+                .register(registry)
+        }.increment()
+
+        if (found) {
+            _mappingDbLookupFoundCounters.getOrPut(key) {
+                Counter.builder("mapping_db_lookup_found_total")
+                    .description("Total mapping database lookups that found a mapping")
+                    .tag("strategy", strategy)
+                    .tag("table", tableName)
+                    .register(registry)
+            }.increment()
+        }
+
+        _mappingDbLookupTimers.getOrPut(key) {
+            Timer.builder("mapping_db_lookup_duration_seconds")
+                .description("Mapping database lookup latency caused by cache misses")
+                .tag("strategy", strategy)
+                .tag("table", tableName)
+                .register(registry)
+        }.record(durationMs, TimeUnit.MILLISECONDS)
+    }
+
     private var _mappingCacheSizeSupplier: (() -> Number)? = null
 
     fun registerMappingCacheSizeSupplier(supplier: () -> Number) {
@@ -170,8 +204,22 @@ object MetricsService {
     fun registerCacheMetrics(mappingService: MappingServiceBase) {
         // Регистрируем размер кэша
         Gauge.builder("mapping_cache_size", mappingService) {
-            (it.getCacheStats()["cache_size"] as Long).toDouble()
+            val stats = it.getCacheStats()
+            PerformanceLogger.logCacheSnapshot(stats)
+            (stats["cache_size"] as Long).toDouble()
         }.register(registry)
+
+        Gauge.builder("mapping_cache_entries", mappingService) {
+            (it.getCacheStats()["lazy_cache_size"] as? Long ?: it.getCacheStats()["cache_size"] as Long).toDouble()
+        }
+            .tag("type", "lazy")
+            .register(registry)
+
+        Gauge.builder("mapping_cache_entries", mappingService) {
+            (it.getCacheStats()["pinned_cache_size"] as? Long ?: 0L).toDouble()
+        }
+            .tag("type", "pinned")
+            .register(registry)
 
         // Регистрируем Hit Rate (коэффициент попаданий)
         Gauge.builder("mapping_cache_hit_rate", mappingService) {

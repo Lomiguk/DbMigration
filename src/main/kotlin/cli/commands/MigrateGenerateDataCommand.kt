@@ -4,6 +4,7 @@ import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.mordant.terminal.Terminal
 import config.MigrateCommand
+import logging.PerformanceLogger
 import tools.LargeDataGenerator
 import ui.MigrationUi
 
@@ -25,6 +26,8 @@ class MigrateGenerateDataCommand : MigrateCommand(
     private val truncate by option("--truncate", "-t", help = "Truncate tables before generation")
         .default("false")
 
+    private val seed by option("--seed", help = "Deterministic random seed for reproducible datasets")
+
     override fun run() {
         val config = buildConfig()
         ui.printSectionTitle("Test Data Generation")
@@ -35,10 +38,18 @@ class MigrateGenerateDataCommand : MigrateCommand(
         }
 
         val doTruncate = truncate.toBoolean() || truncate.equals("yes", ignoreCase = true) || truncate.equals("y", ignoreCase = true)
+        val randomSeed = seed?.toLongOrNull() ?: run {
+            if (seed != null) {
+                ui.printError("Invalid seed: $seed")
+                return
+            }
+            null
+        }
 
         ui.printInfo("Source: ${config.sourceJdbcUrl}")
         ui.printInfo("Base record count: $baseCount")
         ui.printInfo("Truncate before generation: $doTruncate")
+        ui.printInfo("Seed: ${randomSeed ?: "random"}")
         ui.printInfo("")
 
         val generator = LargeDataGenerator(
@@ -62,7 +73,8 @@ class MigrateGenerateDataCommand : MigrateCommand(
                 LargeDataGenerator.GenerationConfig(
                     baseCount = baseCount,
                     batchSize = 10000,
-                    rewriteBatchedInserts = true
+                    rewriteBatchedInserts = true,
+                    seed = randomSeed
                 )
             )
 
@@ -89,6 +101,8 @@ class MigrateGenerateDataCommand : MigrateCommand(
                 e.printStackTrace()
             }
             throw e
+        } finally {
+            PerformanceLogger.finish()
         }
     }
 }

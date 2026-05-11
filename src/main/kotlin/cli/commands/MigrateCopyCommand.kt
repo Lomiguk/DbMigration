@@ -8,6 +8,7 @@ import config.MigrateCommand
 import core.DependencyResolver
 import core.MetadataReader
 import engine.DataMigrator
+import engine.HybridTableSelector
 import engine.MappingServiceFactory
 import engine.MappingStrategy
 import logging.MetricsService
@@ -75,10 +76,16 @@ class MigrateCopyCommand : MigrateCommand(
                 config.mappingStrategy,
                 config.cacheLimit
             )
+
+            if (config.mappingStrategy == MappingStrategy.HYBRID) {
+                val pinnedTables = HybridTableSelector.selectPinnedTables(sourceDs, migrationOrder, config.cacheLimit)
+                mappingService.configurePinnedTables(pinnedTables)
+                ui.printInfo("HYBRID pinned tables: ${pinnedTables.joinToString(", ").ifBlank { "none" }}")
+            }
             
-            // Предзагрузка для EAGER стратегии
-            if (config.mappingStrategy == MappingStrategy.EAGER) {
-                ui.printInfo("Preloading mappings (EAGER strategy)...")
+            // Предзагрузка для стратегий, которые держат часть mappings в памяти.
+            if (config.mappingStrategy == MappingStrategy.EAGER || config.mappingStrategy == MappingStrategy.HYBRID) {
+                ui.printInfo("Preloading mappings (${config.mappingStrategy} strategy)...")
                 val preloadStart = System.currentTimeMillis()
                 mappingService.preloadAllMappings(migrationOrder)
                 ui.printInfo("Preloaded in ${System.currentTimeMillis() - preloadStart}ms")
@@ -169,4 +176,5 @@ class MigrateCopyCommand : MigrateCommand(
             return if (rs.next()) rs.getLong(1) else 0L
         }
     }
+
 }

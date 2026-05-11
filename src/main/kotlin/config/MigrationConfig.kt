@@ -7,6 +7,7 @@ import com.github.ajalt.clikt.parameters.types.long
 import com.zaxxer.hikari.HikariDataSource
 import engine.MappingStrategy
 import logging.MetricsService
+import logging.PerformanceLogger
 import ui.MigrationUi
 import utils.HikariFactory
 import java.io.File
@@ -60,7 +61,7 @@ data class MigrationConfig(
 /**
  * Базовый класс для CLI команд с общей конфигурацией
  */
-abstract class MigrateCommand(name: String, help: String) : CliktCommand(name = name, help = help) {
+abstract class MigrateCommand(private val migrationCommandName: String, help: String) : CliktCommand(name = migrationCommandName, help = help) {
 
     init {
         // Инициализация Observability stack при запуске любой команды
@@ -177,13 +178,13 @@ abstract class MigrateCommand(name: String, help: String) : CliktCommand(name = 
             targetPassword = targetPassword,
 
             batchSize = batchSize,
-            cacheLimit = 10_000_000,  // Значение по умолчанию
+            cacheLimit = cacheLimit,
             mappingStrategy = strategy,
             maxPoolSize = maxPoolSize,
 
             dryRun = dryRun,
             verbose = verbose
-        )
+        ).also { PerformanceLogger.startRun(migrationCommandName, it.asLogProperties()) }
     }
 
     /**
@@ -207,6 +208,12 @@ abstract class MigrateCommand(name: String, help: String) : CliktCommand(name = 
             }
         }
 
+        val strategy = when ((config["mappingStrategy"] ?: mappingStrategy).uppercase()) {
+            "LAZY" -> MappingStrategy.LAZY
+            "HYBRID" -> MappingStrategy.HYBRID
+            else -> MappingStrategy.EAGER
+        }
+
         return MigrationConfig(
             sourceHost = config["sourceHost"] ?: sourceHost,
             sourcePort = config["sourcePort"]?.toInt() ?: sourcePort,
@@ -222,12 +229,30 @@ abstract class MigrateCommand(name: String, help: String) : CliktCommand(name = 
 
             batchSize = config["batchSize"]?.toInt() ?: batchSize,
             cacheLimit = config["cacheLimit"]?.toInt() ?: cacheLimit,
+            mappingStrategy = strategy,
             maxPoolSize = config["maxPoolSize"]?.toInt() ?: maxPoolSize,
 
             dryRun = config["dryRun"]?.toBoolean() ?: dryRun,
             verbose = config["verbose"]?.toBoolean() ?: verbose
-        )
+        ).also { PerformanceLogger.startRun(migrationCommandName, it.asLogProperties() + ("configFile" to path)) }
     }
+
+    private fun MigrationConfig.asLogProperties(): Map<String, String> =
+        mapOf(
+            "sourceHost" to sourceHost,
+            "sourcePort" to sourcePort.toString(),
+            "sourceDatabase" to sourceDatabase,
+            "targetHost" to targetHost,
+            "targetPort" to targetPort.toString(),
+            "targetDatabase" to targetDatabase,
+            "batchSize" to batchSize.toString(),
+            "cacheLimit" to cacheLimit.toString(),
+            "mappingStrategy" to mappingStrategy.name,
+            "maxPoolSize" to maxPoolSize.toString(),
+            "syncStrategy" to syncStrategy,
+            "dryRun" to dryRun.toString(),
+            "verbose" to verbose.toString()
+        )
 }
 
 /**
@@ -255,6 +280,7 @@ targetPassword: password
 # Migration Settings
 batchSize: 1000
 cacheLimit: 500000
+mappingStrategy: LAZY
 maxPoolSize: 10
 connectionTimeout: 30000
 

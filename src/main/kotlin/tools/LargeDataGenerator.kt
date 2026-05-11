@@ -31,7 +31,8 @@ class LargeDataGenerator(
     data class GenerationConfig(
         val baseCount: Int = 1_000_000,
         val batchSize: Int = 10000,
-        val rewriteBatchedInserts: Boolean = true
+        val rewriteBatchedInserts: Boolean = true,
+        val seed: Long? = null
     )
 
     /**
@@ -64,8 +65,9 @@ class LargeDataGenerator(
     fun generateAll(config: GenerationConfig = GenerationConfig()): List<GenerationStats> {
         val stats = mutableListOf<GenerationStats>()
         val baseCount = config.baseCount
+        val random = config.seed?.let { Random(it) } ?: Random.Default
 
-        logger.info("Starting data generation: $baseCount base records per table")
+        logger.info("Starting data generation: $baseCount base records per table, seed=${config.seed ?: "random"}")
 
         val pool = createConnectionPool(config)
 
@@ -84,19 +86,19 @@ class LargeDataGenerator(
                 try {
                     // Level 0: Dictionaries (no FK)
                     logger.info("Generating level 0 (dictionaries)...")
-                    stats.add(generateTable(pool, "regions", baseCount / 100, config) { batch, count ->
+                    stats.add(generateTable(pool, "regions", baseCount / 100, config, random) { batch, count, _ ->
                         batch.add(arrayOf("Region_${count}"))
                     })
 
-                    stats.add(generateTable(pool, "suppliers", baseCount / 100, config) { batch, count ->
+                    stats.add(generateTable(pool, "suppliers", baseCount / 100, config, random) { batch, count, _ ->
                         batch.add(arrayOf("Supplier_${count}"))
                     })
 
-                    stats.add(generateTable(pool, "categories", baseCount / 100, config) { batch, count ->
+                    stats.add(generateTable(pool, "categories", baseCount / 100, config, random) { batch, count, _ ->
                         batch.add(arrayOf("Category_${count}"))
                     })
 
-                    stats.add(generateTable(pool, "customers", baseCount / 10, config) { batch, count ->
+                    stats.add(generateTable(pool, "customers", baseCount / 10, config, random) { batch, count, _ ->
                         batch.add(arrayOf("Customer_${count}"))
                     })
 
@@ -107,27 +109,27 @@ class LargeDataGenerator(
                     logger.info("Generating level 1 (main tables)...")
 
                     val regionIds = getIds(pool, "regions", baseCount / 10)
-                    stats.add(generateTable(pool, "users", baseCount, config) { batch, count ->
-                        batch.add(arrayOf("user${count}_${Random.nextInt(Int.MAX_VALUE)}@example.com", regionIds.random()))
+                    stats.add(generateTable(pool, "users", baseCount, config, random) { batch, count, rng ->
+                        batch.add(arrayOf("user${count}_${rng.nextInt(Int.MAX_VALUE)}@example.com", regionIds.random(rng)))
                     })
 
                     val categoryIds = getIds(pool, "categories")
                     val supplierIds = getIds(pool, "suppliers")
-                    stats.add(generateTable(pool, "products", baseCount / 10, config) { batch, count ->
+                    stats.add(generateTable(pool, "products", baseCount / 10, config, random) { batch, count, rng ->
                         batch.add(arrayOf(
-                            categoryIds.random(),
-                            supplierIds.random(),
+                            categoryIds.random(rng),
+                            supplierIds.random(rng),
                             "Product_${count}",
-                            Random.nextDouble(10.0, 10000.0)
+                            rng.nextDouble(10.0, 10000.0)
                         ))
                     })
 
-                    stats.add(generateTable(pool, "discount_coupons", baseCount / 100, config) { batch, count ->
-                        batch.add(arrayOf("COUPON_${count}_${Random.nextInt(10000, 99999)}", Random.nextInt(5, 50)))
+                    stats.add(generateTable(pool, "discount_coupons", baseCount / 100, config, random) { batch, count, rng ->
+                        batch.add(arrayOf("COUPON_${count}_${rng.nextInt(10000, 99999)}", rng.nextInt(5, 50)))
                     })
 
-                    stats.add(generateTable(pool, "marketing_campaigns", baseCount / 1000, config) { batch, count ->
-                        batch.add(arrayOf(regionIds.random(), "Campaign_${count}"))
+                    stats.add(generateTable(pool, "marketing_campaigns", baseCount / 1000, config, random) { batch, count, rng ->
+                        batch.add(arrayOf(regionIds.random(rng), "Campaign_${count}"))
                     })
 
                     conn.commit()
@@ -137,25 +139,25 @@ class LargeDataGenerator(
                     logger.info("Generating level 2 (dependent tables)...")
 
                     val userIds = getIds(pool, "users", baseCount / 10)
-                    stats.add(generateTable(pool, "profiles", baseCount / 2, config) { batch, count ->
-                        batch.add(arrayOf(userIds.random(), "Bio for user $count"))
+                    stats.add(generateTable(pool, "profiles", baseCount / 2, config, random) { batch, count, rng ->
+                        batch.add(arrayOf(userIds.random(rng), "Bio for user $count"))
                     })
 
-                    stats.add(generateTable(pool, "user_settings", baseCount / 2, config) { batch, count ->
-                        batch.add(arrayOf(userIds.random(), "setting_${count % 100}", "value_${Random.nextInt(1000)}"))
+                    stats.add(generateTable(pool, "user_settings", baseCount / 2, config, random) { batch, count, rng ->
+                        batch.add(arrayOf(userIds.random(rng), "setting_${count % 100}", "value_${rng.nextInt(1000)}"))
                     })
 
                     val productIds = getIds(pool, "products", baseCount / 100)
-                    stats.add(generateTable(pool, "warehouse_stocks", baseCount / 10, config) { batch, count ->
-                        batch.add(arrayOf(productIds.random(), Random.nextInt(1, 1000)))
+                    stats.add(generateTable(pool, "warehouse_stocks", baseCount / 10, config, random) { batch, _, rng ->
+                        batch.add(arrayOf(productIds.random(rng), rng.nextInt(1, 1000)))
                     })
 
-                    stats.add(generateTable(pool, "product_reviews", baseCount / 10, config) { batch, count ->
-                        batch.add(arrayOf(productIds.random(), userIds.random(), Random.nextInt(1, 6)))
+                    stats.add(generateTable(pool, "product_reviews", baseCount / 10, config, random) { batch, _, rng ->
+                        batch.add(arrayOf(productIds.random(rng), userIds.random(rng), rng.nextInt(1, 6)))
                     })
 
-                    stats.add(generateTable(pool, "audit_logs", baseCount, config) { batch, count ->
-                        batch.add(arrayOf(userIds.random(), "ACTION_${Random.nextInt(100)}"))
+                    stats.add(generateTable(pool, "audit_logs", baseCount, config, random) { batch, _, rng ->
+                        batch.add(arrayOf(userIds.random(rng), "ACTION_${rng.nextInt(100)}"))
                     })
 
                     conn.commit()
@@ -165,27 +167,27 @@ class LargeDataGenerator(
                     logger.info("Generating level 3 (sales)...")
 
                     val customerIds = getIds(pool, "customers")
-                    stats.add(generateTable(pool, "orders", baseCount, config) { batch, count ->
-                        batch.add(arrayOf(customerIds.random()))
+                    stats.add(generateTable(pool, "orders", baseCount, config, random) { batch, _, rng ->
+                        batch.add(arrayOf(customerIds.random(rng)))
                     })
 
                     val orderIds = getIds(pool, "orders", baseCount / 10)
-                    stats.add(generateTable(pool, "order_items", baseCount * 2, config) { batch, count ->
-                        batch.add(arrayOf(orderIds.random(), productIds.random(), Random.nextInt(1, 10)))
+                    stats.add(generateTable(pool, "order_items", baseCount * 2, config, random) { batch, _, rng ->
+                        batch.add(arrayOf(orderIds.random(rng), productIds.random(rng), rng.nextInt(1, 10)))
                     })
 
-                    stats.add(generateTable(pool, "shipments", baseCount / 10, config) { batch, count ->
-                        batch.add(arrayOf(orderIds.random(), "Address ${Random.nextInt(10000)}"))
+                    stats.add(generateTable(pool, "shipments", baseCount / 10, config, random) { batch, _, rng ->
+                        batch.add(arrayOf(orderIds.random(rng), "Address ${rng.nextInt(10000)}"))
                     })
 
                     val couponIds = getIds(pool, "discount_coupons")
-                    stats.add(generateTable(pool, "order_coupons", baseCount / 100, config) { batch, count ->
-                        batch.add(arrayOf(orderIds.random(), couponIds.random()))
+                    stats.add(generateTable(pool, "order_coupons", baseCount / 100, config, random) { batch, _, rng ->
+                        batch.add(arrayOf(orderIds.random(rng), couponIds.random(rng)))
                     })
 
                     val campaignIds = getIds(pool, "marketing_campaigns")
-                    stats.add(generateTable(pool, "campaign_stats", baseCount / 1000, config) { batch, count ->
-                        batch.add(arrayOf(campaignIds.random(), Random.nextInt(100, 100000)))
+                    stats.add(generateTable(pool, "campaign_stats", baseCount / 1000, config, random) { batch, _, rng ->
+                        batch.add(arrayOf(campaignIds.random(rng), rng.nextInt(100, 100000)))
                     })
 
                     conn.commit()
@@ -194,13 +196,13 @@ class LargeDataGenerator(
                     // Level 4: Support
                     logger.info("Generating level 4 (support)...")
 
-                    stats.add(generateTable(pool, "support_tickets", baseCount / 100, config) { batch, count ->
-                        batch.add(arrayOf(userIds.random(), "Ticket subject $count"))
+                    stats.add(generateTable(pool, "support_tickets", baseCount / 100, config, random) { batch, count, rng ->
+                        batch.add(arrayOf(userIds.random(rng), "Ticket subject $count"))
                     })
 
                     val ticketIds = getIds(pool, "support_tickets")
-                    stats.add(generateTable(pool, "ticket_messages", baseCount / 10, config) { batch, count ->
-                        batch.add(arrayOf(ticketIds.random(), "Message body $count"))
+                    stats.add(generateTable(pool, "ticket_messages", baseCount / 10, config, random) { batch, count, rng ->
+                        batch.add(arrayOf(ticketIds.random(rng), "Message body $count"))
                     })
 
                     conn.commit()
@@ -234,7 +236,8 @@ class LargeDataGenerator(
         tableName: String,
         count: Int,
         config: GenerationConfig,
-        rowProvider: (MutableList<Array<Any>>, Int) -> Unit
+        random: Random,
+        rowProvider: (MutableList<Array<Any>>, Int, Random) -> Unit
     ): GenerationStats {
         logger.info("Generating $count records for $tableName")
 
@@ -248,10 +251,10 @@ class LargeDataGenerator(
             val sql = "INSERT INTO $tableName (id, ${getColumns(tableName)}) VALUES (?, ${getPlaceholders(tableName)})"
             conn.prepareStatement(sql).use { pstmt ->
                 for (i in 1..count) {
-                    rowProvider(batch, i)
+                    rowProvider(batch, i, random)
 
                     if (batch.size >= batchSize) {
-                        executeBatch(pstmt, batch)
+                        executeBatch(pstmt, batch, random)
                         conn.commit()
                         inserted += batch.size
                         batch.clear()
@@ -264,7 +267,7 @@ class LargeDataGenerator(
                 }
 
                 if (batch.isNotEmpty()) {
-                    executeBatch(pstmt, batch)
+                    executeBatch(pstmt, batch, random)
                     conn.commit()
                     inserted += batch.size
                 }
@@ -282,9 +285,9 @@ class LargeDataGenerator(
     /**
      * Execute batch inserts
      */
-    private fun executeBatch(pstmt: java.sql.PreparedStatement, batch: List<Array<Any>>) {
+    private fun executeBatch(pstmt: java.sql.PreparedStatement, batch: List<Array<Any>>, random: Random) {
         batch.forEach { row ->
-            val id = UUID.randomUUID()
+            val id = UUID(random.nextLong(), random.nextLong())
             pstmt.setObject(1, id)
             row.forEachIndexed { index, value ->
                 pstmt.setObject(index + 2, value)
@@ -337,9 +340,9 @@ class LargeDataGenerator(
     private fun getIds(pool: HikariDataSource, tableName: String, limit: Int? = null): List<UUID> {
         val ids = mutableListOf<UUID>()
         val sql = if (limit != null) {
-            "SELECT id FROM $tableName LIMIT $limit"
+            "SELECT id FROM $tableName ORDER BY id LIMIT $limit"
         } else {
-            "SELECT id FROM $tableName"
+            "SELECT id FROM $tableName ORDER BY id"
         }
 
         pool.connection.use { conn ->

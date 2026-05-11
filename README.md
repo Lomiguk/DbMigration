@@ -7,8 +7,9 @@
 - **~43-45% меньше индексы** (UUID: ~37 MB → BIGINT: ~21 MB для 1M записей).
 - Улучшение JOIN производительности в **2.2 раза**.
 - **Zero-downtime миграция** благодаря логической репликации (CDC через WAL).
-- Защита от OutOfMemory при помощи серверных курсоров (Server-side Cursors).
-- **O(1) In-Memory Cache** для мгновенной подмены внешних ключей.
+- Защита от OutOfMemory при помощи серверных курсоров и bounded-cache стратегии.
+- Три стратегии mapping-кэша: **EAGER**, **LAZY**, **HYBRID**.
+- Воспроизводимая генерация тестовых данных через `generate-data --seed`.
 - Автоматическая топологическая сортировка графа таблиц (JGraphT).
 - Встроенный стек **Observability** (Prometheus + Grafana).
 
@@ -19,16 +20,16 @@
 docker compose up -d
 
 # 2. Генерация тестовых данных
-./gradlew run --args="generate-data --count 50000"
+./gradlew run --args="generate-data --count 50000 --seed 42"
 
 # 3. Анализ схемы и графа зависимостей
 ./gradlew run --args="init"
 
 # 4. Первичная миграция данных (без индексов)
-./gradlew run --args="copy"
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000"
 
-# 4b. Или с переносом индексов из source (рекомендуется)
-./gradlew run --args="copy --migrate-indexes"
+# 4b. Или вместо предыдущей команды: с переносом индексов из source (рекомендуется)
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000 --migrate-indexes"
 
 # 5. Синхронизация дельты
 ./gradlew run --args="sync"
@@ -70,7 +71,7 @@ docker compose up -d
 | Команда | Назначение |
 |---------|------------|
 | `config-init` | Создать пример `migration-config.yaml` |
-| `generate-data` | Сгенерировать тестовые данные в source БД |
+| `generate-data --seed 42` | Сгенерировать воспроизводимые тестовые данные в source БД |
 | `init` | Проанализировать source-схему и построить граф зависимостей |
 | `copy` | Выполнить первичную миграцию данных |
 | `copy --migrate-indexes` | Перенести реальные индексы из source в target |
@@ -82,6 +83,16 @@ docker compose up -d
 | `rollback` | Откатить миграцию |
 | `backup` | Управлять backup/restore |
 | `status` | Показать статус миграции и метрики |
+
+## Стратегии mapping-кэша
+
+| Стратегия | Поведение | Основной выигрыш | Основной риск |
+|-----------|-----------|------------------|---------------|
+| `EAGER` | Предзагружает mapping в память и обслуживает lookup из RAM | Максимальная скорость lookup | Память растет по числу mapping-записей |
+| `LAZY` | Использует bounded Caffeine cache и ходит в `migration_mapping` при cache miss | Предсказуемый heap при заданном `--cache-limit` | Больше DB lookup и ниже скорость |
+| `HYBRID` | Держит малые таблицы в pinned cache, остальные через bounded lazy cache | Компромисс скорости и памяти | Польза зависит от FK-профиля данных |
+
+Для сравнения режимов используйте чистый цикл: `docker compose down -v`, `docker compose up -d`, `generate-data --seed <N>`, затем `copy`. Метрики каждого запуска сохраняются в `performance_logs/run_<timestamp>/`.
 
 ## Тестирование
 
@@ -127,6 +138,7 @@ Unit-тесты не требуют Docker:
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Архитектура, ключевые алгоритмы и структура графа |
 | [OBSERVABILITY.md](docs/OBSERVABILITY.md) | Мониторинг: Grafana, PromQL, CSV-аудит, управление индексами |
 | [TESTING.md](docs/TESTING.md) | Тестирование: unit, integration, benchmark |
+| [PERFORMANCE_BENCHMARK.md](docs/PERFORMANCE_BENCHMARK.md) | Чистый протокол сравнения EAGER/LAZY/HYBRID |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | План разработки, статус этапов и бэклог |
 
 ## Технологический стек

@@ -28,8 +28,8 @@
    .\run-migration.ps1 -Count 50000 -SkipSync -SkipValidate -MigrateIndexes
 
    # Или вручную
-   .\gradlew.bat run --args="generate-data --count 50000"
-   .\gradlew.bat run --args="copy --migrate-indexes"
+   .\gradlew.bat run --args="generate-data --count 50000 --seed 42"
+   .\gradlew.bat run --args="copy --mapping-strategy=LAZY --cache-limit 100000 --migrate-indexes"
    ```
 
 3. **Во время выполнения `copy`** откройте Grafana:
@@ -55,6 +55,7 @@
 | **Всего мигрировано строк**                                                              | `sum(migration_rows_total) by (table)`                                                                                                        | Bar gauge / Stat |
 | **Скорость миграции (строк/сек)**                                                        | `rate(migration_rows_total[1m])`                                                                                                              | Time series |
 | **Размер кэша маппинга**                                                                 | `mapping_cache_size`                                                                                                                          | Stat |
+| **Разделение cache на lazy/pinned**                                                      | `mapping_cache_entries{type="lazy"}`, `mapping_cache_entries{type="pinned"}`                                                                  | Time series |
 | **Среднее время батча (insert)**                                                         | `rate(migration_batch_duration_seconds_sum{operation="insert"}[1m]) / rate(migration_batch_duration_seconds_count{operation="insert"}[1m])`   | Time series |
 | **Среднее время батча (mapping)**                                                        | `rate(migration_batch_duration_seconds_sum{operation="mapping"}[1m]) / rate(migration_batch_duration_seconds_count{operation="mapping"}[1m])` | Time series |
 | **HikariCP соединения**                                                                  | `hikaricp_connections_active`, `hikaricp_connections_idle`, `hikaricp_connections_pending`                                                    | Time series |
@@ -62,10 +63,14 @@
 | **Эффективность кэша (0.0 - 1.0). Позволяет оценить пользу HYBRID стратегии.**           | `mapping_cache_hit_rate`                                                                                                                      |	Gauge |
 | *Количество ключей, удаленных для защиты памяти. Сигнализирует о достижении лимита RAM.* | `mapping_cache_evictions`                                                                                                                     | Counter
 | *Реальное количество объектов в оперативной памяти.*                                     | `mapping_cache_size`                                                                                                                          | Gauge
+| **DB lookup rate при cache miss**                                                        | `sum by (strategy, table) (rate(mapping_db_lookup_total[1m]))`                                                                                 | Time series |
+| **Средняя latency DB lookup**                                                            | `sum by (strategy, table) (rate(mapping_db_lookup_duration_seconds_sum[1m])) / sum by (strategy, table) (rate(mapping_db_lookup_duration_seconds_count[1m]))` | Time series |
 
 **Пороговые значения:**
-- `mapping_cache_size` не должен превышать `cacheLimit`
+- `mapping_cache_size` у `LAZY` должен выходить на плато около `cacheLimit`; кратковременный overshoot Caffeine допустим
+- у `HYBRID` смотрите `mapping_cache_entries{type="pinned"}` и `mapping_cache_entries{type="lazy"}` отдельно
 - `hikaricp_connections_pending > 0` — пул соединений исчерпан, увеличьте `--max-pool-size`
+- рост `mapping_db_lookup_total` показывает цену `LAZY/HYBRID` на cache miss
 
 ---
 
@@ -77,26 +82,34 @@
 
 ```
 performance_logs/run_YYYYMMDD_HHMMSS/
-├── batch_performance_*.csv
-├── connection_pool_*.csv
-├── mapping_performance_*.csv
-└── summary_*.txt
+├── run_config.txt
+├── summary.txt
+├── batch_performance.csv
+├── mapping_performance.csv
+├── mapping_db_lookup.csv
+├── cache_snapshots.csv
+├── jvm_snapshots.csv
+└── connection_pool.csv
 ```
 
 ### Структура отчёта
 
 | Файл | Содержание |
 |------|-----------|
-| `summary_*.txt` | Человекочитаемый отчёт: общее время, средняя скорость, статистика по каждой таблице (min/max время вставки) |
-| `batch_performance_*.csv` | Лог каждого батча. Колонки: `timestamp, table, batch_number, records_total, insert_duration_ms, mapping_duration_ms, commit_duration_ms, total_batch_ms, records_per_sec` |
-| `mapping_performance_*.csv` | Производительность кэша UUID→BIGINT |
-| `connection_pool_*.csv` | Ежесекундный срез HikariCP: `timestamp, active_connections, idle_connections, total_connections, waiting_threads` |
+| `run_config.txt` | Команда, стратегия, `cacheLimit`, batch size, параметры подключения |
+| `summary.txt` | Человекочитаемый отчёт: общее время, средняя скорость, статистика по каждой таблице |
+| `batch_performance.csv` | Лог каждого батча. Колонки: `timestamp, table, batch_number, records_total, insert_duration_ms, mapping_duration_ms, commit_duration_ms, total_batch_ms, records_per_sec` |
+| `mapping_performance.csv` | Производительность сохранения UUID→BIGINT mapping |
+| `mapping_db_lookup.csv` | DB lookup на cache miss: `timestamp, strategy, table, duration_ms, found` |
+| `cache_snapshots.csv` | `cache_size`, `lazy_cache_size`, `pinned_cache_size`, hit rate, evictions, misses |
+| `jvm_snapshots.csv` | Heap, non-heap, GC count/time |
+| `connection_pool.csv` | Срез HikariCP: `timestamp, table, active_connections, idle_connections, total_connections, waiting_threads` |
 
 ### Ожидаемые метрики (ориентиры для 1M записей)
 
 | Метрика | Норма | Проблема если |
 |---------|-------|---------------|
-| Средняя скорость | 10 000–50 000 rec/s | < 5 000 rec/s |
+| Средняя скорость | сравнивайте между стратегиями на одном seed | резкая деградация при одинаковом dataset |
 | Время батча (1000) | 150–300 ms | > 500 ms |
 | INSERT время | 30–80 ms | > 150 ms |
 | MAPPING время | 100–200 ms | > 400 ms |
@@ -122,7 +135,29 @@ python resultAnalizer.py
 
 ---
 
-## 3. Управление индексами
+## 3. Чистый performance benchmark
+
+Для сравнения режимов используйте одинаковый seed и полностью чистую БД перед каждым запуском. Не сравнивайте `EAGER`, `LAZY` и `HYBRID` на базе, где уже остались данные, mapping-таблицы или прогретый page cache после предыдущего сценария.
+
+Минимальный протокол для каждого режима:
+
+```powershell
+docker compose down -v
+docker compose up -d
+.\gradlew.bat run --args="generate-data --count 1000000 --seed 42"
+.\gradlew.bat run --args="copy --mapping-strategy=LAZY --cache-limit 100000 --migrate-indexes"
+```
+
+Меняйте только `--mapping-strategy` и, если нужно, `--cache-limit`. После завершения каждого прогона сохраните:
+- каталог `performance_logs/run_YYYYMMDD_HHMMSS/`
+- скрин или экспорт Grafana за время выполнения `copy`
+- значения Docker/container memory limit, JVM flags и версию commit
+
+Подробный пошаговый сценарий сравнения описан в [PERFORMANCE_BENCHMARK.md](PERFORMANCE_BENCHMARK.md).
+
+---
+
+## 4. Управление индексами
 
 ### Три подхода к индексам при миграции
 

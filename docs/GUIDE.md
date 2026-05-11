@@ -45,7 +45,7 @@
 | `--target-host` | `-th` | Host target БД | localhost |
 | `--target-port` | `-tp` | Port target БД | 5432 |
 | `--target-db` | `-td` | Имя target БД | target_db |
-| `--batch-size` | `-b` | Размер пакета | 1000 |
+| `--batch-size` | `-b` | Размер пакета в конфигурации; основная `copy`-миграция сейчас обрабатывает по 1000 строк | 1000 |
 | `--cache-limit` | `-c` | Лимит кэша | 500000 |
 | `--max-pool-size` | `-m` | Размер пула соединений | 10 |
 | `--dry-run` | `-n` | Пробный запуск | false |
@@ -66,7 +66,7 @@
 #### Вариант 1: Перенос реальной индексной схемы (рекомендуется)
 
 ```bash
-./gradlew run --args="copy --migrate-indexes"
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000 --migrate-indexes"
 ```
 
 Анализирует `pg_catalog` source БД и воссоздаёт в target **точно те же индексы**, автоматически заменяя UUID-типы на BIGINT. Переносятся:
@@ -101,10 +101,10 @@
 ./gradlew run --args="copy"
 
 # Миграция с переносом индексов из source
-./gradlew run --args="copy --migrate-indexes"
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000 --migrate-indexes"
 
-# Миграция с кастомными параметрами и индексами
-./gradlew run --args="copy --batch-size 5000 --max-pool-size 20 --migrate-indexes"
+# Миграция с кастомными параметрами кэша/пула и индексами
+./gradlew run --args="copy --mapping-strategy=HYBRID --cache-limit 300000 --max-pool-size 20 --migrate-indexes"
 
 # Пробный запуск
 ./gradlew run --args="copy --dry-run --verbose"
@@ -125,6 +125,9 @@
 
 # С очисткой таблиц перед генерацией
 ./gradlew run --args="generate-data --count 1000000 --truncate"
+
+# Воспроизводимый набор данных для сравнения режимов
+./gradlew run --args="generate-data --count 1000000 --truncate --seed 42"
 ```
 
 ### Что генерируется
@@ -145,13 +148,14 @@
 |-------|---------|----------|--------------|
 | `--count` | — | Базовое количество записей | 1000000 |
 | `--truncate` | `-t` | Очистить таблицы перед генерацией | false |
+| `--seed` | — | Детерминированный seed для UUID, FK и random-полей | random |
 
 ### Примеры использования
 
 **Полный цикл: генерация → миграция:**
 ```bash
 # 1. Очистить и заполнить БД
-./gradlew run --args="generate-data --count 1000000 --truncate"
+./gradlew run --args="generate-data --count 1000000 --truncate --seed 42"
 
 # 2. Проанализировать схему
 ./gradlew run --args="init"
@@ -162,7 +166,7 @@
 
 **Быстрое тестирование (100K):**
 ```bash
-./gradlew run --args="generate-data --count 100000 --truncate"
+./gradlew run --args="generate-data --count 100000 --truncate --seed 42"
 ./gradlew run --args="copy"
 ```
 
@@ -194,10 +198,10 @@ targetPassword: password
 
 batchSize: 1000
 cacheLimit: 500000
+mappingStrategy: LAZY
 maxPoolSize: 10
 connectionTimeout: 30000
 
-mappingStrategy: EAGER  # EAGER | LAZY | HYBRID
 syncStrategy: MEMORY_FILTERED
 
 dryRun: false
@@ -328,51 +332,57 @@ verbose: true
 
 ### EAGER (полная предзагрузка)
 
-**Принцип:** Загрузить все маппинги перед миграцией
+**Принцип:** загрузить mapping-записи в память перед миграцией и выполнять lookup из RAM.
 
 | Плюсы | Минусы |
 |-------|--------|
-| 0 соединений во время миграции | Требует RAM (~500MB для 20M маппингов) |
-| Максимальная скорость (10000+ rec/s) | Долгая подготовка (1-2 мин) |
+| Минимум DB lookup при FK remap | Требует RAM пропорционально числу mapping-записей |
+| Максимальная скорость lookup | Долгая подготовка на больших mapping-таблицах |
 
-**Когда использовать:** достаточно RAM, миграция >1M записей
+**Когда использовать:** достаточно RAM, важна максимальная скорость.
 
 ### LAZY (ленивая загрузка)
 
-**Принцип:** Загружать маппинги по мере необходимости
+**Принцип:** bounded Caffeine cache; при cache miss выполняется запрос в `migration_mapping`.
 
 | Плюсы | Минусы |
 |-------|--------|
-| Минимум RAM (~50MB) | Медленнее в 3-5 раз |
-| Быстрый старт | Нестабильная скорость |
+| Предсказуемый heap при заданном `--cache-limit` | Больше DB lookup |
+| Быстрый старт | Скорость зависит от hit rate и latency БД |
 
-**Когда использовать:** ограничена память, миграция <500K записей
+**Когда использовать:** ограничена память или миграция должна гарантированно не расти по heap вместе с размером БД.
+
+### HYBRID (малые таблицы в памяти, остальные лениво)
+
+**Принцип:** таблицы, которые помещаются в половину `cacheLimit`, выбираются как pinned и предзагружаются. Остальные lookup идут через bounded lazy cache.
+
+| Плюсы | Минусы |
+|-------|--------|
+| Быстрее LAZY, если FK часто ссылаются на малые таблицы | Польза зависит от профиля FK |
+| Память ниже EAGER на больших схемах | Нужно проверять метрики `pinned/lazy` и DB lookup |
+
+**Когда использовать:** есть небольшие справочники и большие транзакционные таблицы.
 
 ### Сравнение
 
-| Записей | Стратегия | Время | Скорость | RAM | Соединения |
-|---------|-----------|-------|----------|-----|------------|
-| 1M | EAGER | 2 мин | 8333 rec/s | 150MB | 0 |
-| 1M | LAZY | 8 мин | 2083 rec/s | 50MB | 500K |
-| 6.6M | EAGER | 12 мин | 9166 rec/s | 500MB | 0 |
-| 6.6M | LAZY | 45 мин | 2444 rec/s | 100MB | 3M |
+Не используйте фиксированные цифры из документации как результат benchmark. Для проекта важны сравнительные метрики на вашем dataset:
 
-### Формула расчёта памяти
-
-```
-Память (MB) = (Записи × FK на запись × 24 байта) / 1024 / 1024
-
-Пример: 6.6M × 2.5 FK × 24 байта = 396 MB
-```
+| Метрика | Источник |
+|---------|----------|
+| total duration, rows/sec | `summary.txt`, `batch_performance.csv` |
+| peak heap, GC time | `jvm_snapshots.csv` |
+| cache total/lazy/pinned | `cache_snapshots.csv` |
+| DB lookup count/latency | `mapping_db_lookup.csv` |
+| live-графики | Grafana dashboard `DB Migration Observatory` |
 
 ### Рекомендации
 
 | Сценарий | Стратегия | cacheLimit | maxPoolSize |
 |----------|-----------|------------|-------------|
-| Production (>5M) | EAGER | 20000000 | 20 |
-| Тестирование (1-5M) | EAGER | 5000000 | 10 |
-| Малые данные (<1M) | LAZY | 1000000 | 10 |
-| Ограниченные ресурсы | LAZY | 500000 | 5 |
+| Максимальная скорость и достаточно RAM | EAGER | не критичен для RAM-limit | 10-20 |
+| Ограниченный heap | LAZY | 100000-500000 | 5-10 |
+| Смешанная схема: справочники + большие таблицы | HYBRID | 100000-1000000 | 10 |
+| Честный benchmark | EAGER, LAZY, HYBRID | одинаковый для сравниваемых режимов | одинаковый |
 
 ---
 
@@ -380,14 +390,18 @@ verbose: true
 
 ### Файлы логов
 
-После запуска тестов в `performance_logs/` создаются:
+После запуска создаётся папка `performance_logs/run_YYYYMMDD_HHMMSS/`:
 
 | Файл | Содержание |
 |------|------------|
-| `batch_performance_*.csv` | Метрики батчей (insert, mapping, commit) |
-| `mapping_performance_*.csv` | Метрики маппинга |
-| `connection_pool_*.csv` | Статистика пула соединений |
-| `summary_*.txt` | Текстовая сводка |
+| `run_config.txt` | Команда, стратегия, cacheLimit, batchSize, параметры БД |
+| `summary.txt` | Текстовая сводка |
+| `batch_performance.csv` | Метрики батчей (insert, mapping, commit) |
+| `mapping_performance.csv` | Метрики сохранения mapping batch |
+| `mapping_db_lookup.csv` | DB lookup на cache miss: strategy, table, duration, found |
+| `cache_snapshots.csv` | total/lazy/pinned cache, hit rate, evictions, misses |
+| `jvm_snapshots.csv` | heap, non-heap, GC count/time |
+| `connection_pool.csv` | Статистика пула соединений |
 
 ### Формат batch_performance CSV
 
@@ -399,8 +413,8 @@ timestamp,table,batch_number,records_total,insert_duration_ms,mapping_duration_m
 
 | Метрика | Норма | Проблема если |
 |---------|-------|---------------|
-| Средняя скорость | 10000-50000 rec/s | < 5000 rec/s |
-| Время батча (10K) | 150-300ms | > 500ms |
+| Средняя скорость | сравнивайте между стратегиями на одном seed | резкая деградация на том же dataset |
+| Время батча (1000) | 150-300ms | > 500ms |
 | INSERT время | 30-80ms | > 150ms |
 | MAPPING время | 100-200ms | > 400ms |
 | Active connections | 1-2 | > 3 |
@@ -412,7 +426,7 @@ timestamp,table,batch_number,records_total,insert_duration_ms,mapping_duration_m
 import pandas as pd
 import matplotlib.pyplot as plt
 
-df = pd.read_csv('performance_logs/batch_performance_*.csv')
+df = pd.read_csv('performance_logs/run_YYYYMMDD_HHMMSS/batch_performance.csv')
 plt.plot(df['batch_number'], df['mapping_duration_ms'], label='Mapping')
 plt.plot(df['batch_number'], df['insert_duration_ms'], label='Insert')
 plt.legend()
@@ -427,14 +441,16 @@ plt.show()
 
 ### Автоматический сбор метрик
 
-При каждой миграции (`copy`) автоматически собираются метрики в `performance_logs/`:
+При каждой миграции (`copy`) автоматически собираются метрики в `performance_logs/run_YYYYMMDD_HHMMSS/`:
 
 | Файл | Содержание |
 |------|------------|
-| `batch_performance_<ts>.csv` | Время каждого батча (insert, mapping, commit, r/s) |
-| `mapping_performance_<ts>.csv` | Время маппинга UUID→BIGINT |
-| `connection_pool_<ts>.csv` | Состояние пула соединений (active, idle, waiting) |
-| `summary_<ts>.txt` | Текстовая сводка по таблицам |
+| `batch_performance.csv` | Время каждого батча (insert, mapping, commit, r/s) |
+| `mapping_performance.csv` | Время сохранения mapping |
+| `mapping_db_lookup.csv` | DB lookup при cache miss |
+| `cache_snapshots.csv` | Состояние cache |
+| `jvm_snapshots.csv` | Heap и GC |
+| `summary.txt` | Текстовая сводка по таблицам |
 
 ### Анализ после миграции
 
@@ -533,7 +549,7 @@ python resultAnalizer.py
 **Причина:** PostgreSQL не запущен
 ```bash
 docker ps
-docker-compose up -d
+docker compose up -d
 ```
 
 ### Out of memory
@@ -564,8 +580,8 @@ export GRADLE_OPTS="-Xmx2G"
 ### Медленная миграция
 
 ```bash
-# Увеличить batch size и pool size
-./gradlew run --args="copy --batch-size 5000 --max-pool-size 20"
+# Увеличить pool size, если есть ожидание соединений
+./gradlew run --args="copy --max-pool-size 20"
 
 # Проверить стратегию маппинга
 ./gradlew run --args="copy --mapping-strategy=EAGER"
@@ -589,7 +605,7 @@ export PATH=$PATH:/usr/lib/postgresql/15/bin
 ```
 
 ### Out of Memory (JVM Heap Space)
-Если вы видите рост памяти, убедитесь, что вы используете ограничение кэша.
+Если вы видите рост памяти, сначала проверьте выбранную стратегию. `EAGER` намеренно держит весь mapping в heap. Для bounded cache используйте `LAZY` или `HYBRID`.
 **Решение:**
 Используйте флаг `--cache-limit`. Для большинства миграций достаточно 100 000 - 300 000 записей.
 

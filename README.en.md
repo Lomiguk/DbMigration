@@ -7,8 +7,9 @@ Enterprise-grade tool for migrating PostgreSQL databases from 128-bit UUID ident
 - **~43-45% smaller indexes** (UUID: ~37 MB -> BIGINT: ~21 MB for 1M rows).
 - JOIN performance improvement by **2.2x**.
 - **Zero-downtime migration** through logical replication (CDC via WAL).
-- OutOfMemory protection through server-side cursors.
-- **O(1) in-memory cache** for fast foreign key remapping.
+- OutOfMemory protection through server-side cursors and bounded-cache strategies.
+- Three mapping-cache strategies: **EAGER**, **LAZY**, and **HYBRID**.
+- Reproducible test data generation with `generate-data --seed`.
 - Automatic topological sorting of table dependencies with JGraphT.
 - Built-in **observability** stack with Prometheus and Grafana.
 
@@ -19,16 +20,16 @@ Enterprise-grade tool for migrating PostgreSQL databases from 128-bit UUID ident
 docker compose up -d
 
 # 2. Generate test data
-./gradlew run --args="generate-data --count 50000"
+./gradlew run --args="generate-data --count 50000 --seed 42"
 
 # 3. Analyze schema and dependency graph
 ./gradlew run --args="init"
 
 # 4. Run initial data migration without indexes
-./gradlew run --args="copy"
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000"
 
-# 4b. Or migrate with source indexes, recommended
-./gradlew run --args="copy --migrate-indexes"
+# 4b. Or instead of the previous command: migrate with source indexes, recommended
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000 --migrate-indexes"
 
 # 5. Synchronize delta changes
 ./gradlew run --args="sync"
@@ -70,7 +71,7 @@ The command creates `migration-config.yaml`. After editing it, pass it to any CL
 | Command | Purpose |
 |---------|---------|
 | `config-init` | Create a sample `migration-config.yaml` |
-| `generate-data` | Generate test data in the source database |
+| `generate-data --seed 42` | Generate reproducible test data in the source database |
 | `init` | Analyze the source schema and build the dependency graph |
 | `copy` | Run the initial data migration |
 | `copy --migrate-indexes` | Migrate real indexes from source to target |
@@ -82,6 +83,16 @@ The command creates `migration-config.yaml`. After editing it, pass it to any CL
 | `rollback` | Roll back migration |
 | `backup` | Manage backup and restore operations |
 | `status` | Show migration status and metrics |
+
+## Mapping Cache Strategies
+
+| Strategy | Behavior | Main benefit | Main risk |
+|----------|----------|--------------|-----------|
+| `EAGER` | Preloads mapping entries and serves lookups from RAM | Fastest lookup path | Memory grows with mapping size |
+| `LAZY` | Uses bounded Caffeine cache and queries `migration_mapping` on cache misses | Predictable heap with `--cache-limit` | More DB lookups and lower throughput |
+| `HYBRID` | Pins small-table mappings and uses bounded lazy cache for the rest | Speed/memory compromise | Benefit depends on FK access pattern |
+
+For fair comparison, use a clean cycle per run: `docker compose down -v`, `docker compose up -d`, `generate-data --seed <N>`, then `copy`. Each run writes durable metrics to `performance_logs/run_<timestamp>/`.
 
 ## Testing
 
@@ -127,6 +138,7 @@ After `docker compose up -d`, the following services are available:
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture, core algorithms, and dependency graph structure |
 | [OBSERVABILITY.md](docs/OBSERVABILITY.md) | Monitoring: Grafana, PromQL, CSV audit, index management |
 | [TESTING.md](docs/TESTING.md) | Testing: unit, integration, benchmark |
+| [PERFORMANCE_BENCHMARK.md](docs/PERFORMANCE_BENCHMARK.md) | Clean EAGER/LAZY/HYBRID comparison protocol |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Development plan, stage status, and backlog |
 
 ## Technology Stack
