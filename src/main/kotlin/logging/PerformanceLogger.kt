@@ -23,6 +23,7 @@ object PerformanceLogger {
     
     // Основные файлы логов - создаём только при первом использовании
     private var batchLog: PrintWriter? = null
+    private var batchPhaseLog: PrintWriter? = null
     private var mappingLog: PrintWriter? = null
     private var dbLookupLog: PrintWriter? = null
     private var cacheLog: PrintWriter? = null
@@ -52,6 +53,7 @@ object PerformanceLogger {
 
         // Файлы теперь называются просто и понятно, так как они лежат в папке запуска
         batchLog = PrintWriter(FileWriter("$runLogDir/batch_performance.csv"))
+        batchPhaseLog = PrintWriter(FileWriter("$runLogDir/batch_phase_performance.csv"))
         mappingLog = PrintWriter(FileWriter("$runLogDir/mapping_performance.csv"))
         dbLookupLog = PrintWriter(FileWriter("$runLogDir/mapping_db_lookup.csv"))
         cacheLog = PrintWriter(FileWriter("$runLogDir/cache_snapshots.csv"))
@@ -61,6 +63,7 @@ object PerformanceLogger {
         summaryLog = PrintWriter(FileWriter("$runLogDir/summary.txt"))
         
         batchLog?.println("timestamp,table,batch_number,records_total,insert_duration_ms,mapping_duration_ms,commit_duration_ms,total_batch_ms,records_per_sec")
+        batchPhaseLog?.println("timestamp,table,batch_number,phase,duration_ms,records_total,records_per_sec")
         mappingLog?.println("timestamp,table,batch_number,records_saved,mapping_duration_ms,records_per_sec")
         dbLookupLog?.println("timestamp,strategy,table,duration_ms,found")
         cacheLog?.println("timestamp,strategy,cache_size,lazy_cache_size,pinned_cache_size,hit_rate,eviction_count,request_count,miss_count")
@@ -93,6 +96,21 @@ object PerformanceLogger {
         val elapsed = System.currentTimeMillis() - totalStartTime
         dbLookupLog?.println("$elapsed,$strategy,$tableName,$durationMs,$found")
         dbLookupLog?.flush()
+    }
+
+    fun logBatchPhase(
+        tableName: String,
+        batchNumber: Long,
+        phase: String,
+        durationMs: Long,
+        recordsTotal: Long
+    ) {
+        ensureInitialized()
+
+        val elapsed = System.currentTimeMillis() - totalStartTime
+        val recordsPerSec = if (durationMs > 0) recordsTotal * 1000 / durationMs else 0
+        batchPhaseLog?.println("$elapsed,$tableName,$batchNumber,$phase,$durationMs,$recordsTotal,$recordsPerSec")
+        batchPhaseLog?.flush()
     }
 
     fun logCacheSnapshot(stats: Map<String, Any>) {
@@ -151,7 +169,7 @@ object PerformanceLogger {
         val stats = batchStats.getOrPut(tableName) { BatchStats(tableName) }
         synchronized(stats) {
             stats.totalBatches++
-            stats.totalRecords = totalRecords
+            stats.totalRecords += totalRecords
             stats.totalDuration += totalBatchDuration
             stats.minBatchMs = minOf(stats.minBatchMs, totalBatchDuration)
             stats.maxBatchMs = maxOf(stats.maxBatchMs, totalBatchDuration)
@@ -226,8 +244,8 @@ object PerformanceLogger {
             synchronized(stats) {
                 summaryLog?.println("Batches: ${stats.totalBatches}")
                 summaryLog?.println("Batch time (ms): min=${stats.minBatchMs}, max=${stats.maxBatchMs}, avg=${stats.totalDuration / stats.totalBatches}")
-                summaryLog?.println("Insert time (ms): min=${stats.minInsertMs}, max=${stats.maxInsertMs}")
-                summaryLog?.println("Mapping time (ms): min=${stats.minMappingMs}, max=${stats.maxMappingMs}")
+                summaryLog?.println("Copy data time (ms): min=${stats.minInsertMs}, max=${stats.maxInsertMs}")
+                summaryLog?.println("Mapping save time (ms): min=${stats.minMappingMs}, max=${stats.maxMappingMs}")
             }
         }
         
@@ -250,7 +268,7 @@ object PerformanceLogger {
         batchStats.values.forEach { stats ->
             synchronized(stats) {
                 val avgBatchMs = stats.totalDuration / stats.totalBatches
-                val avgRecPerSec = if (avgBatchMs > 0) (stats.totalRecords % 10000) * 1000 / avgBatchMs else 0
+                val avgRecPerSec = if (stats.totalDuration > 0) stats.totalRecords * 1000 / stats.totalDuration else 0
                 
                 summaryLog?.println("\n${stats.tableName}:")
                 summaryLog?.println("  Total records: ${stats.totalRecords}")
@@ -266,6 +284,7 @@ object PerformanceLogger {
         summaryLog?.println("\n============================================================")
         summaryLog?.println("Log files:")
         summaryLog?.println("  - $runLogDir/batch_performance.csv")
+        summaryLog?.println("  - $runLogDir/batch_phase_performance.csv")
         summaryLog?.println("  - $runLogDir/mapping_performance.csv")
         summaryLog?.println("  - $runLogDir/mapping_db_lookup.csv")
         summaryLog?.println("  - $runLogDir/cache_snapshots.csv")
@@ -277,6 +296,7 @@ object PerformanceLogger {
 
         // Сбрасываем буферы и закрываем файлы
         batchLog?.flush()
+        batchPhaseLog?.flush()
         mappingLog?.flush()
         dbLookupLog?.flush()
         cacheLog?.flush()
@@ -286,6 +306,7 @@ object PerformanceLogger {
         summaryLog?.flush()
         
         batchLog?.close()
+        batchPhaseLog?.close()
         mappingLog?.close()
         dbLookupLog?.close()
         cacheLog?.close()

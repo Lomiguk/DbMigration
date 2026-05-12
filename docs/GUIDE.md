@@ -45,7 +45,7 @@
 | `--target-host` | `-th` | Host target БД | localhost |
 | `--target-port` | `-tp` | Port target БД | 5432 |
 | `--target-db` | `-td` | Имя target БД | target_db |
-| `--batch-size` | `-b` | Размер пакета в конфигурации; основная `copy`-миграция сейчас обрабатывает по 1000 строк | 1000 |
+| `--batch-size` | `-b` | Размер пакета для `copy`, `resume` и `sync` | 1000 |
 | `--cache-limit` | `-c` | Лимит кэша | 500000 |
 | `--max-pool-size` | `-m` | Размер пула соединений | 10 |
 | `--dry-run` | `-n` | Пробный запуск | false |
@@ -396,12 +396,13 @@ verbose: true
 |------|------------|
 | `run_config.txt` | Команда, стратегия, cacheLimit, batchSize, параметры БД |
 | `summary.txt` | Текстовая сводка |
-| `batch_performance.csv` | Метрики батчей (insert, mapping, commit) |
+| `batch_performance.csv` | Сводка батчей (`copy_data`, `mapping_save`, commit, r/s) |
+| `batch_phase_performance.csv` | Детализация фаз: `fk_lookup`, `id_allocation`, `csv_build`, `copy_data`, `mapping_save`, `commit` |
 | `mapping_performance.csv` | Метрики сохранения mapping batch |
 | `mapping_db_lookup.csv` | DB lookup на cache miss: strategy, table, duration, found |
 | `cache_snapshots.csv` | total/lazy/pinned cache, hit rate, evictions, misses |
 | `jvm_snapshots.csv` | heap, non-heap, GC count/time |
-| `connection_pool.csv` | Статистика пула соединений |
+| `connection_pool.csv` | Зарезервирован для HikariCP snapshots; сейчас создаётся только header |
 
 ### Формат batch_performance CSV
 
@@ -414,11 +415,11 @@ timestamp,table,batch_number,records_total,insert_duration_ms,mapping_duration_m
 | Метрика | Норма | Проблема если |
 |---------|-------|---------------|
 | Средняя скорость | сравнивайте между стратегиями на одном seed | резкая деградация на том же dataset |
-| Время батча (1000) | 150-300ms | > 500ms |
-| INSERT время | 30-80ms | > 150ms |
-| MAPPING время | 100-200ms | > 400ms |
-| Active connections | 1-2 | > 3 |
-| Waiting threads | 0 | > 0 |
+| Время batch (`--batch-size 5000`) | 80-120ms | > 250ms |
+| `copy_data` | 5-20ms | > 50ms |
+| `mapping_save` | 30-80ms | > 150ms |
+| `id_allocation` | 10-25ms | > 50ms |
+| `fk_lookup` | сравнивайте EAGER/LAZY/HYBRID на одном seed | резкий рост при той же стратегии и seed |
 
 ### Анализ в Python
 
@@ -446,6 +447,7 @@ plt.show()
 | Файл | Содержание |
 |------|------------|
 | `batch_performance.csv` | Время каждого батча (insert, mapping, commit, r/s) |
+| `batch_phase_performance.csv` | Время каждой внутренней фазы batch |
 | `mapping_performance.csv` | Время сохранения mapping |
 | `mapping_db_lookup.csv` | DB lookup при cache miss |
 | `cache_snapshots.csv` | Состояние cache |
@@ -525,7 +527,7 @@ plt.show()
 - Анализ узких мест (самая медленная таблица, максимальная дисперсия)
 - Анализ пула соединений (утечки, contention)
 - Распределение времени батчей (гистограмма)
-- Графики: insert time, mapping time, throughput, batch distribution
+- Графики: throughput, batch distribution, `copy_data`, `mapping_save`, `fk_lookup`, `commit`
 - JSON-отчёт для внешнего анализа
 
 ### Сравнение UUID vs BIGINT

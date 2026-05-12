@@ -71,8 +71,9 @@
 
 Основной движок миграции:
 - Пакетная обработка (batch processing)
-- `reWriteBatchedInserts=true` для оптимизации
-- `RETURN_GENERATED_KEYS` для получения BIGINT ID
+- PostgreSQL `COPY FROM STDIN` для bulk-загрузки target-таблиц
+- Предварительное выделение BIGINT ID из sequence на batch без `RETURN_GENERATED_KEYS`
+- Bulk-сохранение `migration_mapping` через временную таблицу и `COPY`
 - Сохранение прогресса после каждого батча
 
 ### ChangeCapture
@@ -146,11 +147,11 @@ connectionTimeout = 30000
 | `LAZY` | Bounded Caffeine cache + DB lookup на miss | Ограниченное потребление памяти | Дополнительные запросы к БД |
 | `HYBRID` | Pinned cache для малых таблиц + lazy cache для больших | Быстрый доступ к справочникам без unbounded cache | Нужно корректно подобрать лимит и small-table threshold |
 
-### 5. Размер батча: 1,000 записей
+### 5. Размер батча
 
-**Почему:** Консервативный баланс скорость/RAM для основной миграции, удобный для resume и per-batch транзакций.
+**Почему:** Баланс скорость/RAM для основной миграции, удобный для resume и per-batch транзакций.
 
-Генератор тестовых данных использует собственный размер batch для массовой вставки и не задаёт размер batch миграции.
+`batchSize` задаётся через CLI/config и используется `DataMigrator` при `copy`, `resume` и `sync`. Генератор тестовых данных использует собственный размер batch для массовой вставки и не задаёт размер batch миграции.
 
 ### 6. Таблица migration_state
 
@@ -184,7 +185,7 @@ CREATE TABLE migration_state (
 
 **Почему:** Компактность (~10KB на 1000 батчей), легко парсить (Excel, pandas)
 
-**Файлы:** `performance_logs/run_YYYYMMDD_HHMMSS/run_config.txt`, `summary.txt`, `batch_performance.csv`, `mapping_performance.csv`, `mapping_db_lookup.csv`, `cache_snapshots.csv`, `jvm_snapshots.csv`, `connection_pool.csv`
+**Файлы:** `performance_logs/run_YYYYMMDD_HHMMSS/run_config.txt`, `summary.txt`, `batch_performance.csv`, `batch_phase_performance.csv`, `mapping_performance.csv`, `mapping_db_lookup.csv`, `cache_snapshots.csv`, `jvm_snapshots.csv`, `connection_pool.csv`
 
 ### 9. Per-batch транзакции
 

@@ -19,7 +19,8 @@
       "type": "timeseries",
       "gridPos": { "h": 5, "w": 10, "x": 6, "y": 0 },
       "targets": [
-        { "expr": "sum by (table) (rate(migration_rows_total[1m]))", "legendFormat": "{{table}}" }
+        { "expr": "sum by (table) (rate(migration_batch_records_total[$__rate_interval])) / sum by (table) (rate(migration_batch_duration_seconds_sum{operation=\"total\"}[$__rate_interval]))", "legendFormat": "{{table}} active avg" },
+        { "expr": "migration_batch_throughput_rows_per_second", "legendFormat": "{{table}} last batch" }
       ],
       "fieldConfig": { "defaults": { "unit": "rows/sec" } }
     },

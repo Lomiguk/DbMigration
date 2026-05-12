@@ -4,6 +4,10 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import io.micrometer.core.instrument.MeterRegistry
 import logging.MetricsService
+import org.postgresql.copy.CopyManager
+import org.postgresql.core.BaseConnection
+import java.io.StringReader
+import java.sql.Connection
 import java.sql.Statement
 import java.util.UUID
 import javax.sql.DataSource
@@ -49,20 +53,11 @@ object HikariFactory {
     fun saveMappingBatch(ds: DataSource, tableName: String, mappings: Map<UUID, Long>): Map<UUID, Long> {
         if (mappings.isEmpty()) return emptyMap()
 
-        val mappingEntries = mappings.entries.toList()
         ds.connection.use { conn ->
             conn.autoCommit = false
-            conn.prepareStatement(SAVE_MAPPING_SQL).use { pstmt ->
-                mappingEntries.forEach { (uuid, newId) ->
-                    pstmt.setString(1, tableName)
-                    pstmt.setObject(2, uuid)
-                    pstmt.setLong(3, newId)
-                    pstmt.addBatch()
-                }
-                val results = pstmt.executeBatch()
-                conn.commit()
-                return insertedMappings(mappingEntries, results)
-            }
+            val saved = saveMappingBatchInConnection(conn, tableName, mappings)
+            conn.commit()
+            return saved
         }
     }
 
@@ -73,6 +68,72 @@ object HikariFactory {
     fun saveMappingBatchInConnection(conn: java.sql.Connection, tableName: String, mappings: Map<UUID, Long>): Map<UUID, Long> {
         if (mappings.isEmpty()) return emptyMap()
 
+        val baseConnection = try {
+            conn.unwrap(BaseConnection::class.java)
+        } catch (_: Exception) {
+            null
+        }
+        if (baseConnection == null) {
+            return saveMappingBatchWithJdbc(conn, tableName, mappings)
+        }
+
+        val mappingEntries = mappings.entries.toList()
+        conn.createStatement().use { stmt ->
+            stmt.execute(
+                """
+                CREATE TEMP TABLE IF NOT EXISTS tmp_migration_mapping (
+                    table_name VARCHAR(100) NOT NULL,
+                    old_uuid UUID NOT NULL,
+                    new_id BIGINT NOT NULL
+                ) ON COMMIT DROP
+                """.trimIndent()
+            )
+            stmt.execute("TRUNCATE tmp_migration_mapping")
+        }
+
+        val csv = StringBuilder(mappingEntries.size * 64)
+        mappingEntries.forEach { (uuid, newId) ->
+            csv.append(csvValue(tableName)).append(',')
+                .append(uuid).append(',')
+                .append(newId).append('\n')
+        }
+
+        val copyManager = CopyManager(baseConnection)
+        copyManager.copyIn(
+            "COPY tmp_migration_mapping (table_name, old_uuid, new_id) FROM STDIN WITH (FORMAT csv, NULL '\\N')",
+            StringReader(csv.toString())
+        )
+
+        conn.createStatement().use { stmt ->
+            stmt.executeQuery(
+                """
+                INSERT INTO migration_mapping (table_name, old_uuid, new_id)
+                SELECT table_name, old_uuid, new_id
+                FROM tmp_migration_mapping
+                ON CONFLICT DO NOTHING
+                RETURNING old_uuid, new_id
+                """.trimIndent()
+            ).use { rs ->
+                val inserted = linkedMapOf<UUID, Long>()
+                while (rs.next()) {
+                    inserted[rs.getObject("old_uuid") as UUID] = rs.getLong("new_id")
+                }
+                return inserted
+            }
+        }
+    }
+
+    private fun csvValue(value: String): String {
+        val needsQuoting = value.any { it == ',' || it == '"' || it == '\n' || it == '\r' } || value == "\\N"
+        if (!needsQuoting) return value
+        return "\"" + value.replace("\"", "\"\"") + "\""
+    }
+
+    private fun saveMappingBatchWithJdbc(
+        conn: Connection,
+        tableName: String,
+        mappings: Map<UUID, Long>
+    ): Map<UUID, Long> {
         val mappingEntries = mappings.entries.toList()
         conn.prepareStatement(SAVE_MAPPING_SQL).use { pstmt ->
             mappingEntries.forEach { (uuid, newId) ->

@@ -53,11 +53,13 @@
 | Метрика                                                                                  | PromQL                                                                                                                                        | Тип графика |
 |------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|-------------|
 | **Всего мигрировано строк**                                                              | `sum(migration_rows_total) by (table)`                                                                                                        | Bar gauge / Stat |
-| **Скорость миграции (строк/сек)**                                                        | `rate(migration_rows_total[1m])`                                                                                                              | Time series |
+| **Активная скорость batch (строк/сек)**                                                   | `sum by (table) (rate(migration_batch_records_total[$__rate_interval])) / sum by (table) (rate(migration_batch_duration_seconds_sum{operation="total"}[$__rate_interval]))` | Time series |
+| **Скорость последнего batch**                                                             | `migration_batch_throughput_rows_per_second`                                                                                                  | Time series |
 | **Размер кэша маппинга**                                                                 | `mapping_cache_size`                                                                                                                          | Stat |
 | **Разделение cache на lazy/pinned**                                                      | `mapping_cache_entries{type="lazy"}`, `mapping_cache_entries{type="pinned"}`                                                                  | Time series |
 | **Среднее время батча (insert)**                                                         | `rate(migration_batch_duration_seconds_sum{operation="insert"}[1m]) / rate(migration_batch_duration_seconds_count{operation="insert"}[1m])`   | Time series |
 | **Среднее время батча (mapping)**                                                        | `rate(migration_batch_duration_seconds_sum{operation="mapping"}[1m]) / rate(migration_batch_duration_seconds_count{operation="mapping"}[1m])` | Time series |
+| **Фазы batch после COPY-оптимизации**                                                    | `sum by (table, operation) (rate(migration_batch_duration_seconds_sum{operation=~"fk_lookup|id_allocation|csv_build|copy_data|mapping_save|commit"}[1m])) / sum by (table, operation) (rate(migration_batch_duration_seconds_count{operation=~"fk_lookup|id_allocation|csv_build|copy_data|mapping_save|commit"}[1m]))` | Time series |
 | **HikariCP соединения**                                                                  | `hikaricp_connections_active`, `hikaricp_connections_idle`, `hikaricp_connections_pending`                                                    | Time series |
 | **Отставание WAL репликации**                                                            | `replication_lag_bytes`                                                                                                                       | Time series |
 | **Эффективность кэша (0.0 - 1.0). Позволяет оценить пользу HYBRID стратегии.**           | `mapping_cache_hit_rate`                                                                                                                      |	Gauge |
@@ -85,6 +87,7 @@ performance_logs/run_YYYYMMDD_HHMMSS/
 ├── run_config.txt
 ├── summary.txt
 ├── batch_performance.csv
+├── batch_phase_performance.csv
 ├── mapping_performance.csv
 ├── mapping_db_lookup.csv
 ├── cache_snapshots.csv
@@ -99,22 +102,23 @@ performance_logs/run_YYYYMMDD_HHMMSS/
 | `run_config.txt` | Команда, стратегия, `cacheLimit`, batch size, параметры подключения |
 | `summary.txt` | Человекочитаемый отчёт: общее время, средняя скорость, статистика по каждой таблице |
 | `batch_performance.csv` | Лог каждого батча. Колонки: `timestamp, table, batch_number, records_total, insert_duration_ms, mapping_duration_ms, commit_duration_ms, total_batch_ms, records_per_sec` |
+| `batch_phase_performance.csv` | Детализация фаз batch: `fk_lookup`, `id_allocation`, `csv_build`, `copy_data`, `mapping_save`, `commit` |
 | `mapping_performance.csv` | Производительность сохранения UUID→BIGINT mapping |
 | `mapping_db_lookup.csv` | DB lookup на cache miss: `timestamp, strategy, table, duration_ms, found` |
 | `cache_snapshots.csv` | `cache_size`, `lazy_cache_size`, `pinned_cache_size`, hit rate, evictions, misses |
 | `jvm_snapshots.csv` | Heap, non-heap, GC count/time |
-| `connection_pool.csv` | Срез HikariCP: `timestamp, table, active_connections, idle_connections, total_connections, waiting_threads` |
+| `connection_pool.csv` | Зарезервирован для HikariCP snapshots; сейчас создаётся только header |
 
 ### Ожидаемые метрики (ориентиры для 1M записей)
 
 | Метрика | Норма | Проблема если |
 |---------|-------|---------------|
 | Средняя скорость | сравнивайте между стратегиями на одном seed | резкая деградация при одинаковом dataset |
-| Время батча (1000) | 150–300 ms | > 500 ms |
-| INSERT время | 30–80 ms | > 150 ms |
-| MAPPING время | 100–200 ms | > 400 ms |
-| Active connections | 1–2 | > 3 |
-| Waiting threads | 0 | > 0 |
+| Время batch (`--batch-size 5000`) | 80–120 ms | > 250 ms |
+| `copy_data` | 5–20 ms | > 50 ms |
+| `mapping_save` | 30–80 ms | > 150 ms |
+| `id_allocation` | 10–25 ms | > 50 ms |
+| `fk_lookup` | сравнивайте EAGER/LAZY/HYBRID на одном seed | резкий рост при той же стратегии и seed |
 
 ### Анализ через Python
 
@@ -129,7 +133,7 @@ python resultAnalizer.py
 **Вывод анализатора:**
 - Отчёт по каждой таблице (записи, время, скорость, батчи)
 - Анализ узких мест (самая медленная таблица, максимальная дисперсия)
-- Анализ пула соединений (утечки, contention)
+- Анализ пула соединений появится после включения заполнения `connection_pool.csv`
 - Распределение времени батчей (гистограмма)
 - JSON-отчёт для внешнего анализа
 

@@ -106,7 +106,8 @@ class MigrateResumeCommand : MigrateCommand(
                 mappingService,
                 reader,
                 stateRepository,
-                migrationId
+                migrationId,
+                config.batchSize
             )
 
             var totalRows = 0L

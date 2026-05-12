@@ -4,10 +4,13 @@ import core.ForeignKeyColumn
 import core.MetadataReader
 import logging.MetricsService
 import logging.PerformanceLogger
+import org.postgresql.copy.CopyManager
+import org.postgresql.core.BaseConnection
 import state.StateRepository
-import java.sql.PreparedStatement
-import java.sql.Statement.RETURN_GENERATED_KEYS
+import java.io.StringReader
+import java.sql.Connection
 import java.util.*
+import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
 
 class DataMigrator(
@@ -16,12 +19,14 @@ class DataMigrator(
     private val mappingService: MappingServiceBase,
     private val metadataReader: MetadataReader,
     private val stateRepository: StateRepository? = null,
-    private val migrationId: String? = null
+    private val migrationId: String? = null,
+    private val batchSize: Int = 1000
 ) {
     private data class PendingRow(
         val oldPk: UUID,
         val values: Map<String, Any?>
     )
+    private val effectiveBatchSize = batchSize.coerceAtLeast(1)
 
     fun createTargetSchema(tables: List<String>) {
         println(">>> Шаг 2.2: Создание чистой целевой схемы (только BIGINT)...")
@@ -164,10 +169,12 @@ class DataMigrator(
     fun migrateTable(tableName: String, existingIds: Set<UUID> = emptySet()) {
         // Инициализация логирования для этой таблицы
         PerformanceLogger.startTable(tableName)
+        val tableStart = System.currentTimeMillis()
         
         val foreignKeys = metadataReader.getForeignKeysForTable(tableName)
         val columns = metadataReader.getTableColumns(tableName).keys.filter { it != "id" }
-        val batchSize = 1000
+        val alreadyMappedIds = mappingService.getAllMappedUuids(tableName)
+        val skippedIds = if (alreadyMappedIds.isEmpty()) existingIds else existingIds + alreadyMappedIds
 
         // Получение последнего состояния для resume
         val lastState = migrationId?.let { stateRepository?.getTableState(it, tableName) }
@@ -177,132 +184,144 @@ class DataMigrator(
         sourceDataSource.connection.use { sourceConn ->
             targetDataSource.connection.use { targetConn ->
                 targetConn.autoCommit = false
+                targetConn.createStatement().execute("SET synchronous_commit = OFF")
 
                 sourceConn.autoCommit = false
 
-                val stmt = sourceConn.createStatement()
-                // Загружать в RAM только по 5000 строк за раз
-                stmt.fetchSize = 5000
+                try {
+                    val stmt = sourceConn.createStatement()
+                    // Keep cursor chunks aligned with migration batches without loading the full table.
+                    stmt.fetchSize = maxOf(5000, effectiveBatchSize)
 
-                val rs = stmt.executeQuery("SELECT * FROM $tableName ORDER BY id")
+                    val rs = stmt.executeQuery("SELECT * FROM $tableName ORDER BY id")
 
-                val placeholders = columns.joinToString(", ") { "?" }
-                val sql = "INSERT INTO $tableName (${columns.joinToString(", ")}) VALUES ($placeholders)"
-                val preparedStatement = targetConn.prepareStatement(sql, RETURN_GENERATED_KEYS)
+                    val targetColumns = listOf("id") + columns
+                    val currentBatchRows = mutableListOf<PendingRow>()
+                    var newRecordsInTable: Long = 0L
+                    var currentBatchNumber: Long = 0L
+                    var lastUuid: UUID? = null
 
-                val currentBatchRows = mutableListOf<PendingRow>()
-                var newRecordsInTable: Long = 0L
-                var currentBatchNumber: Long = 0L
-                var lastUuid: UUID? = null
+                    while (rs.next()) {
+                        val oldPk = rs.getObject("id") as UUID
 
-                while (rs.next()) {
-                    val oldPk = rs.getObject("id") as UUID
+                        // Пропуск уже обработанных записей при resume
+                        if (lastProcessedUuid != null && oldPk <= lastProcessedUuid) {
+                            continue
+                        }
 
-                    // Пропуск уже обработанных записей при resume
-                    if (lastProcessedUuid != null && oldPk <= lastProcessedUuid) {
-                        continue
+                        if (skippedIds.contains(oldPk)) continue
+
+                        currentBatchRows.add(PendingRow(oldPk, columns.associateWith { col -> rs.getObject(col) }))
+                        newRecordsInTable++
+                        lastUuid = oldPk
+
+                        if (newRecordsInTable % effectiveBatchSize == 0L) {
+                            currentBatchNumber++
+                            processBatch(targetConn, tableName, targetColumns, columns, foreignKeys, currentBatchRows, currentBatchNumber)
+
+                            // Сохранение прогресса для возможности resume
+                            migrationId?.let { mid ->
+                                stateRepository?.saveProgress(mid, tableName, newRecordsInTable, lastUuid, currentBatchNumber)
+                            }
+
+                            currentBatchRows.clear()
+                        }
                     }
 
-                    if (existingIds.contains(oldPk)) continue
-
-                    currentBatchRows.add(PendingRow(oldPk, columns.associateWith { col -> rs.getObject(col) }))
-                    newRecordsInTable++
-                    lastUuid = oldPk
-
-                    if (newRecordsInTable % batchSize == 0L) {
+                    if (currentBatchRows.isNotEmpty()) {
                         currentBatchNumber++
-                        processBatch(tableName, preparedStatement, columns, foreignKeys, currentBatchRows, currentBatchNumber)
-                        targetConn.commit()
+                        processBatch(targetConn, tableName, targetColumns, columns, foreignKeys, currentBatchRows, currentBatchNumber)
 
-                        // Сохранение прогресса для возможности resume
                         migrationId?.let { mid ->
                             stateRepository?.saveProgress(mid, tableName, newRecordsInTable, lastUuid, currentBatchNumber)
                         }
-
-                        currentBatchRows.clear()
                     }
-                }
 
-                if (currentBatchRows.isNotEmpty()) {
-                    currentBatchNumber++
-                    processBatch(tableName, preparedStatement, columns, foreignKeys, currentBatchRows, currentBatchNumber)
-                    targetConn.commit()
+                    if (newRecordsInTable > 0) {
+                        val tableDuration = System.currentTimeMillis() - tableStart
+                        println("Синхронизация $tableName: добавлено $newRecordsInTable новых строк.")
 
-                    migrationId?.let { mid ->
-                        stateRepository?.saveProgress(mid, tableName, newRecordsInTable, lastUuid, currentBatchNumber)
+                        // Завершение логирования таблицы
+                        PerformanceLogger.completeTable(
+                            tableName = tableName,
+                            totalRecords = newRecordsInTable,
+                            totalDuration = tableDuration,
+                            avgRecordsPerSec = if (tableDuration > 0) newRecordsInTable * 1000.0 / tableDuration else 0.0
+                        )
                     }
-                }
-
-                if (newRecordsInTable > 0) {
-                    println("Синхронизация $tableName: добавлено $newRecordsInTable новых строк.")
-                    
-                    // Завершение логирования таблицы
-                    PerformanceLogger.completeTable(
-                        tableName = tableName,
-                        totalRecords = newRecordsInTable,
-                        totalDuration = 0,  // Считаем в другом месте
-                        avgRecordsPerSec = 0.0
-                    )
+                } finally {
+                    try {
+                        targetConn.createStatement().execute("SET synchronous_commit = ON")
+                    } catch (_: Exception) {
+                        // Connection close will discard the session setting if the transaction is already aborted.
+                    }
                 }
             }
         }
     }
 
     private fun processBatch(
+        targetConn: Connection,
         tableName: String,
-        preparedStatement: PreparedStatement,
+        targetColumns: List<String>,
         columns: List<String>,
         foreignKeys: List<ForeignKeyColumn>,
         rows: List<PendingRow>,
         batchNumber: Long
     ) {
         val batchStart = System.currentTimeMillis()
+        val recordsTotal = rows.size.toLong()
+
+        var phaseStart = System.currentTimeMillis()
         val foreignKeysByColumn = foreignKeys.associateBy { it.columnName }
         val mappedForeignKeys = resolveForeignKeys(foreignKeysByColumn, rows)
+        val fkLookupDuration = System.currentTimeMillis() - phaseStart
+        logBatchPhase(tableName, batchNumber, "fk_lookup", fkLookupDuration, recordsTotal)
 
-        rows.forEach { row ->
-            columns.forEachIndexed { index, col ->
-                val value = row.values[col]
-                val fk = foreignKeysByColumn[col]
-                if (fk != null && value is UUID) {
-                    preparedStatement.setObject(index + 1, mappedForeignKeys[fk.refTable]?.get(value))
-                } else {
-                    preparedStatement.setObject(index + 1, value)
-                }
-            }
-            preparedStatement.addBatch()
-        }
+        phaseStart = System.currentTimeMillis()
+        val allocatedIds = allocateTargetIds(targetConn, tableName, rows.size)
+        val idAllocationDuration = System.currentTimeMillis() - phaseStart
+        logBatchPhase(tableName, batchNumber, "id_allocation", idAllocationDuration, recordsTotal)
+
+        phaseStart = System.currentTimeMillis()
+        val copyPayload = buildCopyPayload(columns, foreignKeysByColumn, mappedForeignKeys, rows, allocatedIds)
+        val csvBuildDuration = System.currentTimeMillis() - phaseStart
+        logBatchPhase(tableName, batchNumber, "csv_build", csvBuildDuration, recordsTotal)
 
         // Замер INSERT через Micrometer Timer
         val insertTimer = MetricsService.getMigrationBatchTimer(tableName, "insert")
         val insertDuration = insertTimer.recordCallable<Long> {
-            preparedStatement.executeBatch()
-            System.currentTimeMillis() - batchStart
+            val startedAt = System.currentTimeMillis()
+            copyRows(targetConn, tableName, targetColumns, copyPayload)
+            System.currentTimeMillis() - startedAt
         }!!
+        logBatchPhase(tableName, batchNumber, "copy_data", insertDuration, recordsTotal)
 
-        // Замер generated keys
-        val generatedKeys = preparedStatement.generatedKeys
         val batchMappings = mutableMapOf<UUID, Long>()
-
-        var i = 0
-        while (generatedKeys.next()) {
-            val newId = generatedKeys.getLong(1)
-            val oldUuid = rows[i++].oldPk
-            batchMappings[oldUuid] = newId
+        rows.forEachIndexed { index, row ->
+            batchMappings[row.oldPk] = allocatedIds[index]
         }
 
         // Замер MAPPING через Micrometer Timer
         val mappingTimer = MetricsService.getMigrationBatchTimer(tableName, "mapping")
         val mappingDuration = mappingTimer.recordCallable<Long> {
-            mappingService.saveMappingBatch(tableName, batchMappings, preparedStatement.connection)
-            System.currentTimeMillis() - batchStart
+            val startedAt = System.currentTimeMillis()
+            mappingService.saveMappingBatch(tableName, batchMappings, targetConn)
+            System.currentTimeMillis() - startedAt
         }!!
+        logBatchPhase(tableName, batchNumber, "mapping_save", mappingDuration, recordsTotal)
+
+        phaseStart = System.currentTimeMillis()
+        targetConn.commit()
+        val commitDuration = System.currentTimeMillis() - phaseStart
+        logBatchPhase(tableName, batchNumber, "commit", commitDuration, recordsTotal)
 
         val totalBatchDuration = System.currentTimeMillis() - batchStart
 
         // Increment counter для успешно мигрированных строк
         val rowsCounter = MetricsService.getMigrationRowsCounter(tableName)
         rowsCounter.increment(rows.size.toDouble())
+        MetricsService.recordMigrationBatch(tableName, recordsTotal, totalBatchDuration)
 
         // Логирование метрик (legacy CSV — deprecated)
         PerformanceLogger.logBatch(
@@ -311,7 +330,7 @@ class DataMigrator(
             totalRecords = rows.size.toLong(),
             insertDuration = insertDuration,
             mappingDuration = mappingDuration,
-            commitDuration = 0,
+            commitDuration = commitDuration,
             totalBatchDuration = totalBatchDuration
         )
 
@@ -322,6 +341,64 @@ class DataMigrator(
             durationMs = mappingDuration
         )
     }
+
+    private fun logBatchPhase(
+        tableName: String,
+        batchNumber: Long,
+        phase: String,
+        durationMs: Long,
+        recordsTotal: Long
+    ) {
+        PerformanceLogger.logBatchPhase(tableName, batchNumber, phase, durationMs, recordsTotal)
+        MetricsService.getMigrationBatchTimer(tableName, phase).record(durationMs, TimeUnit.MILLISECONDS)
+    }
+
+    private fun buildCopyPayload(
+        columns: List<String>,
+        foreignKeysByColumn: Map<String, ForeignKeyColumn>,
+        mappedForeignKeys: Map<String, Map<UUID, Long>>,
+        rows: List<PendingRow>,
+        allocatedIds: List<Long>
+    ): String {
+        val builder = StringBuilder(rows.size * columns.size * 16)
+        rows.forEachIndexed { rowIndex, row ->
+            builder.append(allocatedIds[rowIndex])
+            columns.forEach { col ->
+                builder.append(',')
+                val value = row.values[col]
+                val fk = foreignKeysByColumn[col]
+                val targetValue = if (fk != null && value is UUID) {
+                    mappedForeignKeys[fk.refTable]?.get(value)
+                } else {
+                    value
+                }
+                builder.append(csvValue(targetValue))
+            }
+            builder.append('\n')
+        }
+        return builder.toString()
+    }
+
+    private fun copyRows(conn: Connection, tableName: String, targetColumns: List<String>, copyPayload: String) {
+        val copySql = "COPY ${quoteIdentifier(tableName)} (${targetColumns.joinToString(", ") { quoteIdentifier(it) }}) FROM STDIN WITH (FORMAT csv, NULL '\\N')"
+        val copyManager = CopyManager(conn.unwrap(BaseConnection::class.java))
+        copyManager.copyIn(copySql, StringReader(copyPayload))
+    }
+
+    private fun csvValue(value: Any?): String {
+        if (value == null) return "\\N"
+        val text = when (value) {
+            is Number -> value.toString()
+            is Boolean -> value.toString()
+            else -> value.toString()
+        }
+        val needsQuoting = text.any { it == ',' || it == '"' || it == '\n' || it == '\r' } || text == "\\N"
+        if (!needsQuoting) return text
+        return "\"" + text.replace("\"", "\"\"") + "\""
+    }
+
+    private fun quoteIdentifier(identifier: String): String =
+        "\"" + identifier.replace("\"", "\"\"") + "\""
 
     private fun resolveForeignKeys(
         foreignKeysByColumn: Map<String, ForeignKeyColumn>,
@@ -341,5 +418,25 @@ class DataMigrator(
         return uuidsByRefTable.mapValues { (refTable, uuids) ->
             mappingService.getNewIds(refTable, uuids)
         }
+    }
+
+    private fun allocateTargetIds(conn: Connection, tableName: String, count: Int): List<Long> {
+        if (count == 0) return emptyList()
+
+        val ids = ArrayList<Long>(count)
+        conn.prepareStatement("SELECT nextval(pg_get_serial_sequence(?, 'id')) FROM generate_series(1, ?)").use { pstmt ->
+            pstmt.setString(1, "public.$tableName")
+            pstmt.setInt(2, count)
+            val rs = pstmt.executeQuery()
+            while (rs.next()) {
+                ids.add(rs.getLong(1))
+            }
+        }
+
+        check(ids.size == count) {
+            "Allocated ${ids.size} ids for $tableName, expected $count"
+        }
+
+        return ids
     }
 }

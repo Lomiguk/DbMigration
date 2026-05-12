@@ -57,6 +57,8 @@ object MetricsService {
         }
 
     private val _migrationBatchDuration = mutableMapOf<String, Timer>()
+    private val _migrationBatchRecordsTotal = mutableMapOf<String, Counter>()
+    private val _migrationBatchThroughput = mutableMapOf<String, AtomicLong>()
 
     fun getMigrationBatchTimer(tableName: String, operation: String): Timer {
         val key = "$tableName:$operation"
@@ -67,6 +69,27 @@ object MetricsService {
                 .description("Duration of batch operations")
                 .register(registry)
         }
+    }
+
+    fun recordMigrationBatch(tableName: String, records: Long, totalBatchDurationMs: Long) {
+        _migrationBatchRecordsTotal.getOrPut(tableName) {
+            Counter.builder("migration_batch_records_total")
+                .tag("table", tableName)
+                .description("Rows processed by completed migration batches")
+                .register(registry)
+        }.increment(records.toDouble())
+
+        getMigrationBatchTimer(tableName, "total").record(totalBatchDurationMs, TimeUnit.MILLISECONDS)
+
+        val recordsPerSec = if (totalBatchDurationMs > 0) records * 1000 / totalBatchDurationMs else 0
+        _migrationBatchThroughput.getOrPut(tableName) {
+            AtomicLong(0).also { value ->
+                Gauge.builder("migration_batch_throughput_rows_per_second", value) { it.get().toDouble() }
+                    .tag("table", tableName)
+                    .description("Throughput of the last completed migration batch")
+                    .register(registry)
+            }
+        }.set(recordsPerSec)
     }
 
     private val _mappingDbLookupCounters = mutableMapOf<String, Counter>()
