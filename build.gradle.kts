@@ -8,11 +8,6 @@ version = "1.0-SNAPSHOT"
 
 application {
     mainClass.set("cli.MigrateCliKt")
-    applicationDefaultJvmArgs = listOf(
-        "-Dfile.encoding=UTF-8",
-        "-Dstdout.encoding=UTF-8",
-        "-Dconsole.encoding=UTF-8"
-    )
 }
 
 repositories {
