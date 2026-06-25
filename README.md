@@ -1,222 +1,164 @@
-# PostgreSQL UUID to BIGINT Migration Tool
+# PostgreSQL UUID → BIGINT Migration Tool
 
-A research project for migrating PostgreSQL databases from UUID to BIGINT identifiers with comprehensive performance metrics comparison.
+Инструмент корпоративного уровня для миграции PostgreSQL баз данных с 128-битных UUID на 64-битные BIGINT идентификаторы. Обеспечивает сохранение ссылочной целостности, **Zero-downtime** переключение и мониторинг в реальном времени.
 
-## 📋 Overview
+## Ключевые преимущества
 
-This tool demonstrates and measures the benefits of migrating from UUID primary keys to BIGINT (sequential) identifiers in PostgreSQL databases. The migration preserves all foreign key relationships while significantly reducing index sizes.
+- **~43-45% меньше индексы** (UUID: ~37 MB → BIGINT: ~21 MB для 1M записей).
+- Улучшение JOIN производительности в **2.2 раза**.
+- **Zero-downtime миграция** благодаря логической репликации (CDC через WAL).
+- Защита от OutOfMemory при помощи серверных курсоров и bounded-cache стратегии.
+- Три стратегии mapping-кэша: **EAGER**, **LAZY**, **HYBRID**.
+- Воспроизводимая генерация тестовых данных через `generate-data --seed`.
+- Автоматическая топологическая сортировка графа таблиц (JGraphT).
+- Встроенный стек **Observability** (Prometheus + Grafana).
 
-### Key Benefits
+## Быстрый старт
 
-- **~43-45% smaller indexes** (UUID: ~37-38 MB → BIGINT: ~21 MB for 1M records)
-- Better query performance due to sequential index access
-- Reduced storage requirements
-- Maintained data integrity through automatic FK transformation
-
-## 🏗️ Architecture
-
-```
-src/main/kotlin/
-├── Main.kt                    # Entry point - orchestrates 6-step migration
-├── core/
-│   ├── MetadataReader.kt      # Reads table metadata and FK relationships
-│   └── DependencyResolver.kt  # Builds dependency graph (JGraphT), topological sort
-├── engine/
-│   ├── MappingService.kt      # UUID→BIGINT mapping with 2-level cache
-│   └── DataMigrator.kt        # Core migration engine, batch processing
-├── sync/
-│   └── ChangeCapture.kt       # Incremental delta synchronization
-└── tools/
-    ├── RunConfig.kt           # Configuration parameters
-    ├── TestDataGenerator.kt   # Generates test data (1M records)
-    └── ResultCollector.kt     # Collects and saves performance metrics
-```
-
-## 🗄️ Database Schema
-
-The project works with **20 tables** organized in 4 logical domains:
-
-| Domain | Tables | Dependency Depth |
-|--------|--------|------------------|
-| **Users** | `regions`, `users`, `profiles`, `user_settings` | 2 levels |
-| **Warehouse** | `suppliers`, `categories`, `products`, `warehouse_stocks` | 2 levels |
-| **Sales** | `customers`, `orders`, `order_items`, `shipments` | 3 levels |
-| **Analytics** | `product_reviews`, `audit_logs`, `discount_coupons`, `order_coupons`, `support_tickets`, `ticket_messages`, `marketing_campaigns`, `campaign_stats` | 2-3 levels |
-
-### Dependency Graph
-
-```
-regions ──→ users ──→ profiles
-                    └─→ user_settings
-                    └─→ audit_logs
-                    └─→ product_reviews
-                    └─→ support_tickets ──→ ticket_messages
-
-categories ──→ products ──→ order_items
-suppliers ──┘             └─→ product_reviews
-                            └─→ warehouse_stocks
-
-customers ──→ orders ──→ order_items
-                      └─→ shipments
-                      └─→ order_coupons ← discount_coupons
-
-regions ──→ marketing_campaigns ──→ campaign_stats
-```
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- JDK 17+
-- Docker & Docker Compose
-- Gradle 8.x
-
-### Setup
-
-1. **Start PostgreSQL containers:**
-   ```bash
-   docker-compose up -d
-   ```
-   
-   This creates two databases:
-   - `source_db` on `localhost:5431` (UUID schema)
-   - `target_db` on `localhost:5432` (BIGINT schema)
-
-2. **Initialize the source database:**
-   ```bash
-   docker exec -i source_db psql -U postgres -d source_db < init.sql
-   ```
-
-3. **Run the migration:**
-   ```bash
-   ./gradlew run
-   ```
-
-## 🔄 Migration Process
-
-The tool executes a **6-step migration workflow**:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  STEP 1: Generate Test Data                                 │
-│  → TestDataGenerator creates 1M records with UUID PKs       │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│  STEP 2: Analyze Database Structure                         │
-│  → MetadataReader reads tables and FK constraints           │
-│  → DependencyResolver builds graph and sorts tables         │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│  STEP 3: Create Target Schema                               │
-│  → DataMigrator creates tables with BIGSERIAL PRIMARY KEY   │
-│  → UUID FK columns are converted to BIGINT                  │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│  STEP 4: Initial Data Migration                             │
-│  → Read from source in batches of 1000 records              │
-│  → For each UUID FK, lookup in MappingService               │
-│  → Insert into target with new BIGINT ID                    │
-│  → Save UUID→BIGINT mapping to cache and DB                 │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│  STEP 5: Incremental Synchronization                        │
-│  → Generate 100 new records in source                       │
-│  → ChangeCapture gets list of already migrated UUIDs        │
-│  → Migrate only new/changed records (delta sync)            │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│  STEP 6: Collect and Save Metrics                           │
-│  → ResultCollector compares index sizes                     │
-│  → Save results to results/run_<timestamp>/ and CSV         │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## ⚙️ Configuration
-
-### Run Configuration (`RunConfig.kt`)
-
-```kotlin
-totalRecords = 1_000_000    // Records per table
-batchSize = 1000            // Batch processing size
-cacheLimit = 500_000        // In-memory cache limit
-syncStrategy = "MEMORY_FILTERED"
-```
-
-### Build Configuration (`build.gradle.kts`)
-
-| Dependency | Version | Purpose |
-|------------|---------|---------|
-| PostgreSQL Driver | 42.7.1 | JDBC driver |
-| HikariCP | 5.1.0 | Connection pooling |
-| JGraphT | 1.5.2 | Dependency graph algorithms |
-| Kotlin Coroutines | 1.7.3 | Async processing |
-| Exposed | 0.46.0 | Schema inspection |
-| Logback | 1.4.11 | Logging |
-| Testcontainers | 1.19.3 | Integration testing |
-
-## 📊 Results
-
-Results are saved to `results/run_<timestamp>/` directory and aggregated in `migration_history.csv`.
-
-### Performance Comparison (1M records)
-
-| Metric | UUID | BIGINT | Improvement |
-|--------|------|--------|-------------|
-| **Index Size** | ~37-38 MB | ~21 MB | **~43-45%** |
-| **Storage** | Higher | Lower | Significant |
-| **Sequential Access** | Random | Sequential | Better cache locality |
-
-## 🔑 Key Features
-
-1. **Topological Sorting** - Guarantees correct migration order based on FK dependencies
-2. **Two-Level Mapping Cache** - ConcurrentHashMap (in-memory) + Database for persistence
-3. **Batch Processing** - 1000 records per batch for optimal performance
-4. **Delta Synchronization** - Only migrates new/changed data
-5. **Automatic FK Transformation** - Transparent UUID→BIGINT conversion in relationships
-6. **Comprehensive Metrics** - Index size comparison before/after migration
-
-## 📁 Project Structure
-
-```
-DbMigrationArticleProject/
-├── src/main/kotlin/           # Kotlin source code
-├── init.sql                   # Source database schema (20 UUID tables)
-├── compose.yaml               # Docker Compose configuration
-├── build.gradle.kts           # Gradle build configuration
-├── migration_history.csv      # Historical migration results
-├── resultAnalizer.py          # Python script for result analysis
-└── results/                   # Migration run results
-```
-
-## 🧪 Testing
-
-Run tests with:
 ```bash
-./gradlew test
+# 1. Запуск БД и инфраструктуры мониторинга
+docker compose up -d
+
+# 2. Генерация тестовых данных
+./gradlew run --args="generate-data --count 50000 --seed 42"
+
+# 3. Анализ схемы и графа зависимостей
+./gradlew run --args="init"
+
+# 4. Первичная миграция данных (без индексов)
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000"
+
+# 4b. Или вместо предыдущей команды: с переносом индексов из source (рекомендуется)
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000 --migrate-indexes"
+
+# 5. Синхронизация дельты
+./gradlew run --args="sync"
+
+# 6. Проверка статуса
+./gradlew run --args="status"
 ```
 
-The project uses Testcontainers for integration tests with real PostgreSQL instances.
+## Требования
 
-## 🔍 Analysis
+- JDK 17.
+- Docker и Docker Compose.
+- PostgreSQL logical replication для source БД. В локальном стенде она уже включена в `compose.yaml`.
+- Gradle Wrapper из репозитория: `./gradlew` для Linux/macOS или `.\gradlew.bat` для Windows.
 
-Use the provided Python script to analyze results:
+## Конфигурация
+
+По умолчанию приложение использует локальный стенд из `compose.yaml`:
+
+| Назначение | Host | Port | Database | User |
+|------------|------|------|----------|------|
+| Source DB | localhost | 5431 | source_db | user |
+| Target DB | localhost | 5432 | target_db | user |
+
+Создать пример конфигурационного файла:
+
 ```bash
-python resultAnalizer.py
+./gradlew run --args="config-init"
 ```
 
-## 📝 License
+Команда создаст `migration-config.yaml`. После редактирования его можно передать любой CLI-команде:
 
-This is a research project for educational and experimental purposes.
+```bash
+./gradlew run --args="copy --config migration-config.yaml"
+```
 
-## 🤝 Contributing
+## Основные команды CLI
 
-Feel free to submit issues and enhancement requests!
+| Команда | Назначение |
+|---------|------------|
+| `config-init` | Создать пример `migration-config.yaml` |
+| `generate-data --seed 42` | Сгенерировать воспроизводимые тестовые данные в source БД |
+| `init` | Проанализировать source-схему и построить граф зависимостей |
+| `copy` | Выполнить первичную миграцию данных |
+| `copy --migrate-indexes` | Перенести реальные индексы из source в target |
+| `copy --create-fk-indexes` | Создать индексы на FK-колонках в target |
+| `sync` | Выполнить дельта-синхронизацию новых строк |
+| `replicate` | Применить изменения через WAL/CDC |
+| `replicate --continuous` | Запустить непрерывную WAL-репликацию |
+| `validate` | Проверить количество строк, FK и mapping |
+| `rollback` | Откатить миграцию |
+| `backup` | Управлять backup/restore |
+| `status` | Показать статус миграции и метрики |
 
-## 📞 Author
+## Стратегии mapping-кэша
 
-Research project for database migration performance analysis.
+| Стратегия | Поведение | Основной выигрыш | Основной риск |
+|-----------|-----------|------------------|---------------|
+| `EAGER` | Предзагружает mapping в память и обслуживает lookup из RAM | Максимальная скорость lookup | Память растет по числу mapping-записей |
+| `LAZY` | Использует bounded Caffeine cache и ходит в `migration_mapping` при cache miss | Предсказуемый heap при заданном `--cache-limit` | Больше DB lookup и ниже скорость |
+| `HYBRID` | Держит малые таблицы в pinned cache, остальные через bounded lazy cache | Компромисс скорости и памяти | Польза зависит от FK-профиля данных |
+
+Для сравнения режимов используйте чистый цикл: `docker compose down -v`, `docker compose up -d`, `generate-data --seed <N>`, затем `copy`. Метрики каждого запуска сохраняются в `performance_logs/run_<timestamp>/`.
+
+## Тестирование
+
+Unit-тесты не требуют Docker:
+
+```bash
+./gradlew test --tests unit.*
+```
+
+Интеграционные и benchmark-тесты используют Testcontainers, поэтому Docker должен быть запущен:
+
+```bash
+./gradlew test --tests integration.*
+./gradlew test --tests benchmark.RealtimeReplicationTest
+./gradlew benchmarkTest
+```
+
+## Локальные сервисы
+
+После `docker compose up -d` доступны:
+
+| Сервис | URL |
+|--------|-----|
+| Source PostgreSQL | `localhost:5431` |
+| Target PostgreSQL | `localhost:5432` |
+| Prometheus | `http://localhost:9090` |
+| Pushgateway | `http://localhost:9091` |
+| Grafana | `http://localhost:3000` (`admin` / `admin`) |
+
+## Ограничения и проверки перед production
+
+- Инструмент рассчитан на миграцию PostgreSQL-схем с UUID primary keys в target-схему с BIGINT/BIGSERIAL identifiers.
+- Перед production-запуском сделайте backup source/target БД.
+- После `copy` или `replicate` запускайте `validate`.
+- Для production-нагрузки предпочтительно использовать `copy --migrate-indexes`, чтобы перенести реальные индексы source-схемы.
+- `copy --create-fk-indexes` является опциональным режимом и создает индексы только по FK-колонкам.
+
+## Документация
+
+| Документ | Описание |
+|----------|----------|
+| [GUIDE.md](docs/GUIDE.md) | Полное руководство: CLI, backup, rollback, mapping, индексы, performance |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Архитектура, ключевые алгоритмы и структура графа |
+| [OBSERVABILITY.md](docs/OBSERVABILITY.md) | Мониторинг: Grafana, PromQL, CSV-аудит, управление индексами |
+| [TESTING.md](docs/TESTING.md) | Тестирование: unit, integration, benchmark |
+| [PERFORMANCE_BENCHMARK.md](docs/PERFORMANCE_BENCHMARK.md) | Чистый протокол сравнения EAGER/LAZY/HYBRID |
+| [DEVELOPMENT.md](docs/DEVELOPMENT.md) | План разработки, статус этапов и бэклог |
+
+## Технологический стек
+
+- **Kotlin 2.2** (JVM 17) — основной язык
+- **PostgreSQL JDBC 42.7** — драйвер БД
+- **HikariCP 5.1** — пул соединений
+- **JGraphT 1.5** — топологическая сортировка зависимостей
+- **Clikt + Mordant** — CLI-фреймворк
+- **Micrometer + Prometheus** — метрики
+- **Grafana** — визуализация
+- **JUnit 5 + Testcontainers** — тестирование
+
+## Структура БД (Тестовый стенд)
+
+Проект включает тестовую E-commerce / ERP схему на 20 таблиц со сложными связями (до 5 уровней глубины).
+
+| Домен | Таблицы | Глубина |
+|-------|---------|---------|
+| Users | regions, users, profiles, user_settings | 2 |
+| Warehouse | suppliers, categories, products, warehouse_stocks | 2 |
+| Sales | customers, orders, order_items, shipments | 3 |
+| Analytics | product_reviews, audit_logs, discount_coupons, order_coupons, support_tickets, ticket_messages, marketing_campaigns, campaign_stats | 2-3 |

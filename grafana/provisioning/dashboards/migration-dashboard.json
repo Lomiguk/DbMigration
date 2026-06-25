@@ -1,0 +1,138 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Migrated Rows",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum(migration_rows_total)", "legendFormat": "rows" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": { "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" }, "orientation": "auto", "textMode": "value", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" }
+    },
+    {
+      "id": 2,
+      "title": "Throughput",
+      "type": "timeseries",
+      "gridPos": { "h": 5, "w": 10, "x": 6, "y": 0 },
+      "targets": [
+        { "expr": "sum by (table) (rate(migration_batch_records_total[$__rate_interval])) / sum by (table) (rate(migration_batch_duration_seconds_sum{operation=\"total\"}[$__rate_interval]))", "legendFormat": "{{table}} active avg" },
+        { "expr": "migration_batch_throughput_rows_per_second", "legendFormat": "{{table}} last batch" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "rows/sec" } }
+    },
+    {
+      "id": 3,
+      "title": "Heap And CPU",
+      "type": "timeseries",
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 },
+      "targets": [
+        { "expr": "sum(jvm_memory_used_bytes{area=\"heap\"})", "legendFormat": "heap used" },
+        { "expr": "process_cpu_usage", "legendFormat": "cpu" }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "heap used" }, "properties": [{ "id": "unit", "value": "bytes" }] },
+          { "matcher": { "id": "byName", "options": "cpu" }, "properties": [{ "id": "unit", "value": "percentunit" }] }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "title": "Mapping Cache Size",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 5 },
+      "targets": [
+        { "expr": "mapping_cache_size", "legendFormat": "total" },
+        { "expr": "mapping_cache_entries{type=\"lazy\"}", "legendFormat": "lazy" },
+        { "expr": "mapping_cache_entries{type=\"pinned\"}", "legendFormat": "pinned" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 5,
+      "title": "Cache Quality",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 5 },
+      "targets": [
+        { "expr": "mapping_cache_hit_rate", "legendFormat": "hit rate" },
+        { "expr": "increase(mapping_cache_evictions[1m])", "legendFormat": "evictions/min" }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "hit rate" }, "properties": [{ "id": "unit", "value": "percentunit" }] }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "title": "DB Lookup Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 5 },
+      "targets": [
+        { "expr": "sum by (strategy, table) (rate(mapping_db_lookup_total[1m]))", "legendFormat": "{{strategy}} {{table}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "id": 7,
+      "title": "DB Lookup Latency Avg",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 11 },
+      "targets": [
+        { "expr": "sum by (strategy, table) (rate(mapping_db_lookup_duration_seconds_sum[1m])) / sum by (strategy, table) (rate(mapping_db_lookup_duration_seconds_count[1m]))", "legendFormat": "{{strategy}} {{table}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 8,
+      "title": "Batch Latency Avg",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 11 },
+      "targets": [
+        { "expr": "sum by (table, operation) (rate(migration_batch_duration_seconds_sum[1m])) / sum by (table, operation) (rate(migration_batch_duration_seconds_count[1m]))", "legendFormat": "{{table}} {{operation}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 9,
+      "title": "GC Time",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 11 },
+      "targets": [
+        { "expr": "sum by (action, cause) (rate(jvm_gc_pause_seconds_sum[1m]))", "legendFormat": "{{action}} {{cause}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 10,
+      "title": "Replication Lag",
+      "type": "timeseries",
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 17 },
+      "targets": [
+        { "expr": "replication_lag_bytes", "legendFormat": "lag" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
+      "id": 11,
+      "title": "Replication Events Applied",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 17 },
+      "targets": [
+        { "expr": "replication_events_applied_total", "legendFormat": "events" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": { "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" }, "orientation": "auto", "textMode": "value", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" }
+    }
+  ],
+  "schemaVersion": 39,
+  "time": { "from": "now-30m", "to": "now" },
+  "title": "DB Migration Observatory",
+  "uid": "db-migration-001"
+}
