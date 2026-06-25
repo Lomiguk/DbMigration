@@ -181,10 +181,10 @@ object PerformanceLogger {
 
         // Детальный лог для аномалий
         if (mappingDuration > 500) {
-            logger.warn("[SLOW_MAPPING] $tableName batch $batchNumber: mapping took ${mappingDuration}ms for ${totalRecords % 10000} records")
+            logger.warn("[SLOW_MAPPING] $tableName batch $batchNumber: mapping took ${mappingDuration}ms for $totalRecords records")
         }
         if (insertDuration > 200) {
-            logger.warn("[SLOW_INSERT] $tableName batch $batchNumber: insert took ${insertDuration}ms for ${totalRecords % 10000} records")
+            logger.warn("[SLOW_INSERT] $tableName batch $batchNumber: insert took ${insertDuration}ms for $totalRecords records")
         }
         if (commitDuration > 100) {
             logger.warn("[SLOW_COMMIT] $tableName batch $batchNumber: commit took ${commitDuration}ms")

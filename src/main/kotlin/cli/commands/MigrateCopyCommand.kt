@@ -97,8 +97,40 @@ class MigrateCopyCommand : MigrateCommand(
             if (!config.dryRun) {
                 migrator.createTargetSchema(migrationOrder)
                 ui.printSuccess("Целевая схема создана")
+            }
 
-                // Перенос индексов (по умолчанию выключен — явный выбор)
+            // Миграция данных
+            ui.printSectionTitle("Миграция данных")
+            var totalRows = 0L
+            var totalDuration = 0L
+
+            migrationOrder.forEach { table ->
+                val sourceRowCount = getRowCount(sourceDs, table)
+                val targetRowCountBefore = getRowCount(targetDs, table)
+                val mappedRowCount = getMappingCount(targetDs, table)
+
+                if (sourceRowCount == targetRowCountBefore && sourceRowCount == mappedRowCount) {
+                    ui.printInfo("Таблица $table уже перенесена, пропуск ($sourceRowCount строк)")
+                    totalRows += targetRowCountBefore
+                    return@forEach
+                }
+
+                val duration = measureTimeMillis {
+                    ui.printInfo("Миграция таблицы: $table")
+                    if (!config.dryRun) {
+                        migrator.migrateTable(table)
+                    }
+                }
+
+                val rowCount = getRowCount(targetDs, table)
+                totalRows += rowCount
+                totalDuration += duration
+
+                ui.printMigrationStats(table, rowCount, duration, rowCount * 1000.0 / duration)
+            }
+
+            if (!config.dryRun) {
+                // Build secondary indexes after the bulk load so COPY does not maintain them row by row.
                 when {
                     migrateIndexes -> {
                         migrator.migrateIndexes(migrationOrder)
@@ -112,26 +144,6 @@ class MigrateCopyCommand : MigrateCommand(
                         ui.printInfo("Индексы не переносятся. Используйте --migrate-indexes для переноса из source или --create-fk-indexes для создания на FK.")
                     }
                 }
-            }
-
-            // Миграция данных
-            ui.printSectionTitle("Миграция данных")
-            var totalRows = 0L
-            var totalDuration = 0L
-
-            migrationOrder.forEach { table ->
-                val duration = measureTimeMillis {
-                    ui.printInfo("Миграция таблицы: $table")
-                    if (!config.dryRun) {
-                        migrator.migrateTable(table)
-                    }
-                }
-
-                val rowCount = getRowCount(targetDs, table)
-                totalRows += rowCount
-                totalDuration += duration
-
-                ui.printMigrationStats(table, rowCount, duration, rowCount * 1000.0 / duration)
             }
 
             // Итоговая сводка
@@ -174,6 +186,16 @@ class MigrateCopyCommand : MigrateCommand(
         ds.connection.use { conn ->
             val rs = conn.createStatement().executeQuery("SELECT COUNT(*) FROM $tableName")
             return if (rs.next()) rs.getLong(1) else 0L
+        }
+    }
+
+    private fun getMappingCount(ds: HikariDataSource, tableName: String): Long {
+        ds.connection.use { conn ->
+            conn.prepareStatement("SELECT COUNT(*) FROM migration_mapping WHERE table_name = ?").use { pstmt ->
+                pstmt.setString(1, tableName)
+                val rs = pstmt.executeQuery()
+                return if (rs.next()) rs.getLong(1) else 0L
+            }
         }
     }
 

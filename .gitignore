@@ -55,3 +55,7 @@ bin/
 performance_logs/
 performance_runs/
 
+connection_usage.log
+migration-config.yaml
+WAL_test.txt
+.gradle-user
