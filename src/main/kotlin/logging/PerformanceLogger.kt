@@ -274,7 +274,7 @@ object PerformanceLogger {
                 summaryLog?.println("  Total records: ${stats.totalRecords}")
                 summaryLog?.println("  Total batches: ${stats.totalBatches}")
                 summaryLog?.println("  Avg batch time: ${avgBatchMs}ms")
-                summaryLog?.println("  Avg speed: ${avgRecPerSec} rec/sec")
+                summaryLog?.println("  Avg speed: $avgRecPerSec rec/sec")
                 summaryLog?.println("  Batch range: ${stats.minBatchMs}ms - ${stats.maxBatchMs}ms")
                 summaryLog?.println("  Insert range: ${stats.minInsertMs}ms - ${stats.maxInsertMs}ms")
                 summaryLog?.println("  Mapping range: ${stats.minMappingMs}ms - ${stats.maxMappingMs}ms")

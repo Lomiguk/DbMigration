@@ -36,24 +36,6 @@ class PerformanceMonitor {
     private val startTime = System.currentTimeMillis()
 
     /**
-     * Замер выполнения операции
-     */
-    fun <T> measure(operation: String, block: () -> T): T {
-        val tracker = trackers.getOrPut(operation) { OperationTracker() }
-        val start = System.currentTimeMillis()
-        
-        try {
-            return block()
-        } finally {
-            val duration = System.currentTimeMillis() - start
-            tracker.count.incrementAndGet()
-            tracker.totalTime.addAndGet(duration)
-            tracker.minTime.updateAndGet { minOf(it, duration) }
-            tracker.maxTime.updateAndGet { maxOf(it, duration) }
-        }
-    }
-
-    /**
      * Отчёт по всем операциям
      */
     fun printReport() {

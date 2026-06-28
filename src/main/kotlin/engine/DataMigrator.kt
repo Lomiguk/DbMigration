@@ -7,6 +7,7 @@ import logging.PerformanceLogger
 import org.postgresql.copy.CopyManager
 import org.postgresql.core.BaseConnection
 import state.StateRepository
+import utils.csvValue as csvTextValue
 import java.io.StringReader
 import java.sql.Connection
 import java.util.*
@@ -178,7 +179,7 @@ class DataMigrator(
 
         // Получение последнего состояния для resume
         val lastState = migrationId?.let { stateRepository?.getTableState(it, tableName) }
-        val resumeBatchNumber = lastState?.lastBatchNumber ?: 0
+        val resumeBatchNumber = lastState?.lastBatchNumber?.toLong() ?: 0L
         val lastProcessedUuid = lastState?.lastProcessedUuid?.let { UUID.fromString(it) }
 
         sourceDataSource.connection.use { sourceConn ->
@@ -197,11 +198,12 @@ class DataMigrator(
 
                     val targetColumns = listOf("id") + columns
                     val currentBatchRows = mutableListOf<PendingRow>()
-                    var newRecordsInTable: Long = 0L
-                    var currentBatchNumber: Long = 0L
+                    var newRecordsInTable = 0L
+                    var currentBatchNumber: Long = resumeBatchNumber
                     var lastUuid: UUID? = null
 
                     while (rs.next()) {
+                        // TODO where is check?
                         val oldPk = rs.getObject("id") as UUID
 
                         // Пропуск уже обработанных записей при resume
@@ -290,7 +292,7 @@ class DataMigrator(
 
         // Замер INSERT через Micrometer Timer
         val insertTimer = MetricsService.getMigrationBatchTimer(tableName, "insert")
-        val insertDuration = insertTimer.recordCallable<Long> {
+        val insertDuration = insertTimer.recordCallable {
             val startedAt = System.currentTimeMillis()
             copyRows(targetConn, tableName, targetColumns, copyPayload)
             System.currentTimeMillis() - startedAt
@@ -392,9 +394,7 @@ class DataMigrator(
             is Boolean -> value.toString()
             else -> value.toString()
         }
-        val needsQuoting = text.any { it == ',' || it == '"' || it == '\n' || it == '\r' } || text == "\\N"
-        if (!needsQuoting) return text
-        return "\"" + text.replace("\"", "\"\"") + "\""
+        return csvTextValue(text)
     }
 
     private fun quoteIdentifier(identifier: String): String =

@@ -66,6 +66,19 @@ The command creates `migration-config.yaml`. After editing it, pass it to any CL
 ./gradlew run --args="copy --config migration-config.yaml"
 ```
 
+Detailed connection usage logging is controlled by `detailedConnectionLogging`.
+It is enabled by default and writes its report to `connection_usage.log`. Disable it from the CLI:
+
+```bash
+./gradlew run --args="copy --detailed-connection-logging false"
+```
+
+Or from `migration-config.yaml`:
+
+```yaml
+detailedConnectionLogging: false
+```
+
 ## Main CLI Commands
 
 | Command | Purpose |

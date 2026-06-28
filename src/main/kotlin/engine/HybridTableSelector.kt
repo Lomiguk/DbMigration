@@ -8,6 +8,7 @@ object HybridTableSelector {
         var used = 0L
 
         return tables
+            .asSequence()
             .map { table -> table to getRowCount(ds, table) }
             .sortedBy { (_, rows) -> rows }
             .filter { (_, rows) ->

@@ -41,7 +41,7 @@ class DatabaseBackupService(
             "-f", backupFile.absolutePath
         )
 
-        logger.info("Executing: ${pgDumpCmd.joinToString(" ")}")
+        logCommand(pgDumpCmd)
 
         val process = ProcessBuilder(pgDumpCmd)
             .redirectErrorStream(true)
@@ -111,7 +111,7 @@ class DatabaseBackupService(
             backupFile.absolutePath
         )
 
-        logger.info("Executing: ${pgRestoreCmd.joinToString(" ")}")
+        logCommand(pgRestoreCmd)
 
         val process = ProcessBuilder(pgRestoreCmd)
             .redirectErrorStream(true)
@@ -222,6 +222,10 @@ class DatabaseBackupService(
             bytes < 1024 * 1024 * 1024 -> "${bytes / (1024 * 1024)} MB"
             else -> "${bytes / (1024 * 1024 * 1024)} GB"
         }
+    }
+
+    private fun logCommand(command: List<String>) {
+        logger.info("Executing: ${command.joinToString(" ")}")
     }
 }
 

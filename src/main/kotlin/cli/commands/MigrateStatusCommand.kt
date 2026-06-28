@@ -7,7 +7,6 @@ import core.MetadataReader
 import engine.MappingServiceFactory
 import logging.MetricsService
 import ui.MigrationUi
-import utils.HikariFactory
 
 /**
  * Команда: migrate status
@@ -30,42 +29,40 @@ class MigrateStatusCommand : MigrateCommand(
 
         try {
             // Подключение к базам данных
-            ui.printInfo("Source: ${config.sourceJdbcUrl}")
-            ui.printInfo("Target: ${config.targetJdbcUrl}")
-
-            sourceDs = HikariFactory.createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
-            targetDs = HikariFactory.createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
+            val (source, target) = createDataSourcesWithLog(config, ui)
+            sourceDs = source
+            targetDs = target
 
             // Получение информации о source database
             ui.printSectionTitle("Source Database (UUID)")
-            val sourceReader = MetadataReader(sourceDs)
+            val sourceReader = MetadataReader(source)
             val sourceTables = sourceReader.getAllTablesWithUuidPk()
 
             sourceTables.forEach { table ->
-                val rowCount = getRowCount(sourceDs, table)
-                val indexSize = getIndexSize(sourceDs, table)
-                terminal.println("  $table: ${rowCount} rows, ${indexSize} index")
+                val rowCount = getRowCount(source, table)
+                val indexSize = getIndexSize(source, table)
+                terminal.println("  $table: $rowCount rows, $indexSize index")
             }
 
             // Получение информации о target database
             ui.printSectionTitle("Target Database (BIGINT)")
-            val targetReader = MetadataReader(targetDs)
+            val targetReader = MetadataReader(target)
             val targetTables = targetReader.getAllTablesWithUuidPk()
 
             if (targetTables.isEmpty()) {
                 ui.printWarning("Целевая схема ещё не создана")
             } else {
                 targetTables.forEach { table ->
-                    val rowCount = getRowCount(targetDs, table)
-                    val indexSize = getIndexSize(targetDs, table)
-                    terminal.println("  $table: ${rowCount} rows, ${indexSize} index")
+                    val rowCount = getRowCount(target, table)
+                    val indexSize = getIndexSize(target, table)
+                    terminal.println("  $table: $rowCount rows, $indexSize index")
                 }
             }
 
             // Статус маппинга
             ui.printSectionTitle("Статус маппинга UUID → BIGINT")
             val mappingService = MappingServiceFactory.create(
-                targetDataSource = targetDs,
+                targetDataSource = target,
                 strategy = config.mappingStrategy,
                 cacheLimit = config.cacheLimit
             )
@@ -80,7 +77,7 @@ class MigrateStatusCommand : MigrateCommand(
             ui.printSectionTitle("Итого")
             ui.printSuccess("Всего таблиц в source: ${sourceTables.size}")
             ui.printSuccess("Всего таблиц в target: ${targetTables.size}")
-            ui.printSuccess("Всего замапплено записей: ${totalMapped}")
+            ui.printSuccess("Всего замапплено записей: $totalMapped")
 
             // Прогресс миграции
             if (sourceTables.isNotEmpty()) {

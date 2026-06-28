@@ -6,6 +6,7 @@ import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.parameters.types.long
 import com.zaxxer.hikari.HikariDataSource
 import engine.MappingStrategy
+import logging.DetailedConnectionLogger
 import logging.MetricsService
 import logging.PerformanceLogger
 import ui.MigrationUi
@@ -45,6 +46,7 @@ data class MigrationConfig(
     // Advanced
     val dryRun: Boolean = false,
     val verbose: Boolean = false,
+    val detailedConnectionLogging: Boolean = true,
     val configFile: String? = null
 ) {
     val sourceJdbcUrl: String
@@ -124,6 +126,12 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
     protected val verbose by option("--verbose", "-v", help = "Verbose output")
         .flag()
 
+    protected val detailedConnectionLogging by option(
+        "--detailed-connection-logging",
+        help = "Enable detailed connection usage logging: true or false"
+    ).convert { it.toBooleanStrict() }
+        .default(true)
+
     protected val mappingStrategy by option("--mapping-strategy", "-ms", help = "Mapping strategy: EAGER, LAZY, HYBRID")
         .default("EAGER")
 
@@ -183,8 +191,12 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
             maxPoolSize = maxPoolSize,
 
             dryRun = dryRun,
-            verbose = verbose
-        ).also { PerformanceLogger.startRun(migrationCommandName, it.asLogProperties()) }
+            verbose = verbose,
+            detailedConnectionLogging = detailedConnectionLogging
+        ).also {
+            DetailedConnectionLogger.configure(it.detailedConnectionLogging)
+            PerformanceLogger.startRun(migrationCommandName, it.asLogProperties())
+        }
     }
 
     /**
@@ -233,8 +245,12 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
             maxPoolSize = config["maxPoolSize"]?.toInt() ?: maxPoolSize,
 
             dryRun = config["dryRun"]?.toBoolean() ?: dryRun,
-            verbose = config["verbose"]?.toBoolean() ?: verbose
-        ).also { PerformanceLogger.startRun(migrationCommandName, it.asLogProperties() + ("configFile" to path)) }
+            verbose = config["verbose"]?.toBoolean() ?: verbose,
+            detailedConnectionLogging = config["detailedConnectionLogging"]?.toBoolean() ?: detailedConnectionLogging
+        ).also {
+            DetailedConnectionLogger.configure(it.detailedConnectionLogging)
+            PerformanceLogger.startRun(migrationCommandName, it.asLogProperties() + ("configFile" to path))
+        }
     }
 
     private fun MigrationConfig.asLogProperties(): Map<String, String> =
@@ -251,7 +267,8 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
             "maxPoolSize" to maxPoolSize.toString(),
             "syncStrategy" to syncStrategy,
             "dryRun" to dryRun.toString(),
-            "verbose" to verbose.toString()
+            "verbose" to verbose.toString(),
+            "detailedConnectionLogging" to detailedConnectionLogging.toString()
         )
 }
 
@@ -290,6 +307,7 @@ syncStrategy: MEMORY_FILTERED
 # Advanced
 dryRun: false
 verbose: true
+detailedConnectionLogging: true
 """.trimIndent()
 
     val file = Paths.get(path).toFile()

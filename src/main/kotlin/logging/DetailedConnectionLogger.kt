@@ -17,11 +17,17 @@ class DetailedConnectionLogger {
 
     companion object {
         private val logger = LoggerFactory.getLogger(DetailedConnectionLogger::class.java)
-        private val instance = DetailedConnectionLogger()
+        private val loggerInstance by lazy { DetailedConnectionLogger() }
+        @Volatile
+        private var enabled = true
         
-        fun getInstance(): DetailedConnectionLogger = instance
+        fun getInstance(): DetailedConnectionLogger = loggerInstance
+        fun configure(enabled: Boolean) {
+            this.enabled = enabled
+        }
+
+        fun isEnabled(): Boolean = enabled
         
-        const val ENABLED = true
         const val LOG_FILE = "connection_usage.log"
     }
 
@@ -57,6 +63,11 @@ class DetailedConnectionLogger {
     private var writer: PrintWriter? = null
 
     init {
+        ensureWriter()
+    }
+
+    private fun ensureWriter() {
+        if (!isEnabled() || writer != null) return
         try {
             writer = PrintWriter(FileWriter(LOG_FILE), true)
             writeHeader()
@@ -78,7 +89,8 @@ class DetailedConnectionLogger {
      * Логирование начала получения соединения
      */
     fun logAcquireStart(operation: String) {
-        if (!ENABLED) return
+        if (!isEnabled()) return
+        ensureWriter()
         
         val event = ConnectionEvent(
             timestamp = System.currentTimeMillis(),
@@ -107,7 +119,8 @@ class DetailedConnectionLogger {
      * Логирование получения соединения
      */
     fun logAcquireEnd(operation: String, waitTimeMs: Long) {
-        if (!ENABLED) return
+        if (!isEnabled()) return
+        ensureWriter()
         
         val event = ConnectionEvent(
             timestamp = System.currentTimeMillis(),
@@ -120,7 +133,7 @@ class DetailedConnectionLogger {
         
         events.add(event)
         writeEvent(event)
-        
+
         if (waitTimeMs > 100) {
             logSlowAcquire(operation, waitTimeMs)
         }
@@ -132,7 +145,8 @@ class DetailedConnectionLogger {
      * Логирование освобождения соединения
      */
     fun logRelease(operation: String, durationMs: Long) {
-        if (!ENABLED) return
+        if (!isEnabled()) return
+        ensureWriter()
         
         val event = ConnectionEvent(
             timestamp = System.currentTimeMillis(),
@@ -147,7 +161,8 @@ class DetailedConnectionLogger {
         writeEvent(event)
         
         trackers[operation]?.activeCount?.decrementAndGet()
-        
+
+        // TODO Check the connection output system; too many warning logs
         if (durationMs > 1000) {
             logSlowOperation(operation, durationMs)
         }
@@ -157,6 +172,8 @@ class DetailedConnectionLogger {
      * Выполнение операции с полным логированием
      */
     fun <T> executeWithLogging(operation: String, block: () -> T): T {
+        if (!isEnabled()) return block()
+
         val acquireStart = System.currentTimeMillis()
         logAcquireStart(operation)
 
@@ -174,6 +191,7 @@ class DetailedConnectionLogger {
         val event = ConnectionEvent(
             timestamp = System.currentTimeMillis(),
             operation = operation,
+            // TODO get personal SLOW_ACQUIRE
             eventType = EventType.SLOW_OPERATION,
             threadName = Thread.currentThread().name,
             threadId = Thread.currentThread().id,
@@ -258,6 +276,8 @@ class DetailedConnectionLogger {
      * Финальный отчёт
      */
     fun printFinalReport() {
+        if (!isEnabled()) return
+
         val elapsed = System.currentTimeMillis() - startTime
         
         writer?.println("\n" + "=" .repeat(120))
@@ -339,5 +359,6 @@ class DetailedConnectionLogger {
  * Extension функции
  */
 fun <T> String.logConnectionDetailed(block: () -> T): T {
+    if (!DetailedConnectionLogger.isEnabled()) return block()
     return DetailedConnectionLogger.getInstance().executeWithLogging(this, block)
 }

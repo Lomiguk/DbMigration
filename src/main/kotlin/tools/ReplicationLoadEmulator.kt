@@ -30,14 +30,14 @@ class ReplicationLoadEmulator(
                 // 20% нагрузки - обновления (смена email)
                 opType < 90 -> {
                     if (activeUsers.isNotEmpty()) {
-                        generateUpdates(Math.min(batchSize, activeUsers.size))
+                        generateUpdates(batchSize.coerceAtMost(activeUsers.size))
                         operationsDone += batchSize
                     }
                 }
                 // 10% нагрузки - удаления (удаление профилей)
                 else -> {
                     if (activeProfiles.isNotEmpty()) {
-                        generateDeletes(Math.min(batchSize / 10, activeProfiles.size))
+                        generateDeletes((batchSize / 10).coerceAtMost(activeProfiles.size))
                         operationsDone += (batchSize / 10)
                     }
                 }
@@ -81,7 +81,7 @@ class ReplicationLoadEmulator(
             conn.autoCommit = false
             val updateStmt = conn.prepareStatement("UPDATE users SET email = ? WHERE id = ?")
 
-            for (i in 0 until count) {
+            (0 until count).forEach { _ ->
                 val userId = activeUsers.random()
                 val uniqueHash = UUID.randomUUID().toString().take(8)
                 updateStmt.setString(1, "updated_$uniqueHash@test.com")

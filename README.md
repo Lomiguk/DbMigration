@@ -66,6 +66,19 @@ docker compose up -d
 ./gradlew run --args="copy --config migration-config.yaml"
 ```
 
+Детальное логирование использования соединений управляется параметром `detailedConnectionLogging`.
+По умолчанию оно включено и пишет отчёт в `connection_usage.log`. Отключить можно через CLI:
+
+```bash
+./gradlew run --args="copy --detailed-connection-logging false"
+```
+
+Или через `migration-config.yaml`:
+
+```yaml
+detailedConnectionLogging: false
+```
+
 ## Основные команды CLI
 
 | Команда | Назначение |

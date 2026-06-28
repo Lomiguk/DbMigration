@@ -5,9 +5,6 @@ import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.mordant.terminal.Terminal
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
-import core.MetadataReader
-import engine.MappingServiceFactory
-import engine.MappingStrategy
 import logging.MetricsService
 import rollback.RollbackService
 import state.StateRepository
@@ -54,8 +51,6 @@ class MigrateRollbackCommand : MigrateCommand(
 
             // Инициализация сервисов
             val stateRepository = StateRepository(targetDs)
-            val mappingService = MappingServiceFactory.create(targetDs, MappingStrategy.EAGER, 10_000_000)
-            val metadataReader = MetadataReader(sourceDs)
 
             // Определение migration ID
             val actualMigrationId = migrationId ?: stateRepository.getLastActiveMigration()

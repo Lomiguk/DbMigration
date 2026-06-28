@@ -19,6 +19,53 @@ private fun recordMappingDbLookup(strategy: String, tableName: String, startedAt
     PerformanceLogger.logMappingDbLookup(strategy, tableName, durationMs, found)
 }
 
+private fun fetchMappingFromDatabase(
+    targetDataSource: DataSource,
+    strategy: String,
+    tableName: String,
+    oldUuid: UUID
+): Long? {
+    val startedAt = System.currentTimeMillis()
+    var found = false
+
+    try {
+        targetDataSource.connection.use { conn ->
+            conn.prepareStatement("SELECT new_id FROM migration_mapping WHERE table_name = ? AND old_uuid = ?").use { pstmt ->
+                pstmt.setString(1, tableName)
+                pstmt.setObject(2, oldUuid)
+                val rs = pstmt.executeQuery()
+                if (rs.next()) {
+                    found = true
+                    return rs.getLong("new_id")
+                }
+                return null
+            }
+        }
+    } finally {
+        recordMappingDbLookup(strategy, tableName, startedAt, found)
+    }
+}
+
+private fun loadMappingsFromDatabase(
+    targetDataSource: DataSource,
+    tableName: String,
+    onMapping: (UUID, Long) -> Unit
+): Int {
+    var count = 0
+    targetDataSource.connection.use { conn ->
+        conn.prepareStatement("SELECT old_uuid, new_id FROM migration_mapping WHERE table_name = ?").use { pstmt ->
+            pstmt.fetchSize = 10000
+            pstmt.setString(1, tableName)
+            val rs = pstmt.executeQuery()
+            while (rs.next()) {
+                onMapping(rs.getObject("old_uuid") as UUID, rs.getLong("new_id"))
+                count++
+            }
+        }
+    }
+    return count
+}
+
 /**
  * LAZY strategy: bounded Caffeine cache with database lookup on cache miss.
  */
@@ -37,13 +84,6 @@ class MappingService(
 
     init {
         createMappingTable()
-        // Исправлено: безопасная регистрация метрики
-        try {
-            // Если в MetricsService нет registerCacheSizeGauge, используем стандартный счетчик или игнорируем
-            // MetricsService.replicationEventsAppliedCounter...
-        } catch (e: Exception) {
-            logger.warn("Could not register cache metrics: ${e.message}")
-        }
     }
 
     private fun createMappingTable() {
@@ -65,29 +105,19 @@ class MappingService(
     override fun preloadMappings(tableName: String) {
         logger.info("Preloading mappings for table $tableName...")
         val startTime = System.currentTimeMillis()
-        var count = 0
+        val tempMap = mutableMapOf<MappingKey, Long>()
 
-        targetDataSource.connection.use { conn ->
-            conn.createStatement().apply { fetchSize = 10000 }.use { stmt ->
-                val rs = stmt.executeQuery("SELECT old_uuid, new_id FROM migration_mapping WHERE table_name = '$tableName'")
-                val tempMap = mutableMapOf<MappingKey, Long>()
-
-                while (rs.next()) {
-                    val oldUuid = rs.getObject("old_uuid") as UUID
-                    val newId = rs.getLong("new_id")
-                    tempMap[MappingKey(tableName, oldUuid)] = newId
-                    count++
-
-                    if (tempMap.size >= 10000) {
-                        cache.putAll(tempMap)
-                        tempMap.clear()
-                    }
-                }
-                if (tempMap.isNotEmpty()) {
-                    cache.putAll(tempMap)
-                }
+        val count = loadMappingsFromDatabase(targetDataSource, tableName) { oldUuid, newId ->
+            tempMap[MappingKey(tableName, oldUuid)] = newId
+            if (tempMap.size >= 10000) {
+                cache.putAll(tempMap)
+                tempMap.clear()
             }
         }
+        if (tempMap.isNotEmpty()) {
+            cache.putAll(tempMap)
+        }
+
         logger.info("Preloaded $count mappings for $tableName in ${System.currentTimeMillis() - startTime}ms")
     }
 
@@ -98,33 +128,11 @@ class MappingService(
         val cachedId = cache.getIfPresent(key)
         if (cachedId != null) return cachedId
 
-        val idFromDb = fetchMappingFromDatabase(tableName, oldUuid)
+        val idFromDb = fetchMappingFromDatabase(targetDataSource, "LAZY", tableName, oldUuid)
         if (idFromDb != null) {
             cache.put(key, idFromDb)
         }
         return idFromDb
-    }
-
-    private fun fetchMappingFromDatabase(tableName: String, oldUuid: UUID): Long? {
-        val startedAt = System.currentTimeMillis()
-        var found = false
-
-        try {
-            targetDataSource.connection.use { conn ->
-                conn.prepareStatement("SELECT new_id FROM migration_mapping WHERE table_name = ? AND old_uuid = ?").use { pstmt ->
-                    pstmt.setString(1, tableName)
-                    pstmt.setObject(2, oldUuid)
-                    val rs = pstmt.executeQuery()
-                    if (rs.next()) {
-                        found = true
-                        return rs.getLong("new_id")
-                    }
-                    return null
-                }
-            }
-        } finally {
-            recordMappingDbLookup("LAZY", tableName, startedAt, found)
-        }
     }
 
     override fun getNewIds(tableName: String, oldUuids: Collection<UUID>): Map<UUID, Long> {
@@ -194,20 +202,6 @@ class MappingService(
         cache.put(MappingKey(tableName, newUuid), targetId)
     }
 
-    override fun getAllMappedUuids(tableName: String): Set<UUID> {
-        targetDataSource.connection.use { conn ->
-            conn.prepareStatement("SELECT old_uuid FROM migration_mapping WHERE table_name = ?").use { pstmt ->
-                pstmt.setString(1, tableName)
-                val rs = pstmt.executeQuery()
-                val result = mutableSetOf<UUID>()
-                while (rs.next()) {
-                    result.add(rs.getObject("old_uuid") as UUID)
-                }
-                return result
-            }
-        }
-    }
-
     override fun getCacheStats(): Map<String, Any> {
         cache.cleanUp()
         val stats = cache.stats()
@@ -255,16 +249,8 @@ class EagerMappingService(
 
     override fun preloadMappings(tableName: String) {
         logger.info("EAGER preload mappings for table $tableName...")
-        var count = 0
-
-        targetDataSource.connection.use { conn ->
-            conn.createStatement().apply { fetchSize = 10000 }.use { stmt ->
-                val rs = stmt.executeQuery("SELECT old_uuid, new_id FROM migration_mapping WHERE table_name = '$tableName'")
-                while (rs.next()) {
-                    cache[MappingKey(tableName, rs.getObject("old_uuid") as UUID)] = rs.getLong("new_id")
-                    count++
-                }
-            }
+        val count = loadMappingsFromDatabase(targetDataSource, tableName) { oldUuid, newId ->
+            cache[MappingKey(tableName, oldUuid)] = newId
         }
 
         logger.info("EAGER preloaded $count mappings for $tableName")
@@ -294,20 +280,6 @@ class EagerMappingService(
     override fun replaceMapping(tableName: String, oldUuid: UUID, newUuid: UUID, targetId: Long) {
         cache.remove(MappingKey(tableName, oldUuid))
         cache[MappingKey(tableName, newUuid)] = targetId
-    }
-
-    override fun getAllMappedUuids(tableName: String): Set<UUID> {
-        targetDataSource.connection.use { conn ->
-            conn.prepareStatement("SELECT old_uuid FROM migration_mapping WHERE table_name = ?").use { pstmt ->
-                pstmt.setString(1, tableName)
-                val rs = pstmt.executeQuery()
-                val result = mutableSetOf<UUID>()
-                while (rs.next()) {
-                    result.add(rs.getObject("old_uuid") as UUID)
-                }
-                return result
-            }
-        }
     }
 
     override fun getCacheStats(): Map<String, Any> =
@@ -370,15 +342,8 @@ class HybridMappingService(
         if (tableName !in pinnedTables) return
 
         logger.info("HYBRID preload pinned mappings for table $tableName...")
-        var count = 0
-        targetDataSource.connection.use { conn ->
-            conn.createStatement().apply { fetchSize = 10000 }.use { stmt ->
-                val rs = stmt.executeQuery("SELECT old_uuid, new_id FROM migration_mapping WHERE table_name = '$tableName'")
-                while (rs.next()) {
-                    pinnedCache[MappingKey(tableName, rs.getObject("old_uuid") as UUID)] = rs.getLong("new_id")
-                    count++
-                }
-            }
+        val count = loadMappingsFromDatabase(targetDataSource, tableName) { oldUuid, newId ->
+            pinnedCache[MappingKey(tableName, oldUuid)] = newId
         }
         logger.info("HYBRID preloaded $count pinned mappings for $tableName")
     }
@@ -393,7 +358,7 @@ class HybridMappingService(
         val cachedId = lazyCache.getIfPresent(key)
         if (cachedId != null) return cachedId
 
-        val idFromDb = fetchMappingFromDatabase(tableName, oldUuid)
+        val idFromDb = fetchMappingFromDatabase(targetDataSource, "HYBRID", tableName, oldUuid)
         if (idFromDb != null) {
             if (tableName in pinnedTables) {
                 pinnedCache[key] = idFromDb
@@ -402,28 +367,6 @@ class HybridMappingService(
             }
         }
         return idFromDb
-    }
-
-    private fun fetchMappingFromDatabase(tableName: String, oldUuid: UUID): Long? {
-        val startedAt = System.currentTimeMillis()
-        var found = false
-
-        try {
-            targetDataSource.connection.use { conn ->
-                conn.prepareStatement("SELECT new_id FROM migration_mapping WHERE table_name = ? AND old_uuid = ?").use { pstmt ->
-                    pstmt.setString(1, tableName)
-                    pstmt.setObject(2, oldUuid)
-                    val rs = pstmt.executeQuery()
-                    if (rs.next()) {
-                        found = true
-                        return rs.getLong("new_id")
-                    }
-                    return null
-                }
-            }
-        } finally {
-            recordMappingDbLookup("HYBRID", tableName, startedAt, found)
-        }
     }
 
     override fun getNewIds(tableName: String, oldUuids: Collection<UUID>): Map<UUID, Long> {
@@ -511,20 +454,6 @@ class HybridMappingService(
             pinnedCache[newKey] = targetId
         } else {
             lazyCache.put(newKey, targetId)
-        }
-    }
-
-    override fun getAllMappedUuids(tableName: String): Set<UUID> {
-        targetDataSource.connection.use { conn ->
-            conn.prepareStatement("SELECT old_uuid FROM migration_mapping WHERE table_name = ?").use { pstmt ->
-                pstmt.setString(1, tableName)
-                val rs = pstmt.executeQuery()
-                val result = mutableSetOf<UUID>()
-                while (rs.next()) {
-                    result.add(rs.getObject("old_uuid") as UUID)
-                }
-                return result
-            }
         }
     }
 

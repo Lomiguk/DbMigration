@@ -12,7 +12,6 @@ import engine.MappingStrategy
 import logging.MetricsService
 import sync.ChangeCapture
 import ui.MigrationUi
-import utils.HikariFactory
 import kotlin.system.measureTimeMillis
 
 /**
@@ -36,14 +35,12 @@ class MigrateSyncCommand : MigrateCommand(
 
         try {
             // Подключение к базам данных
-            ui.printInfo("Source: ${config.sourceJdbcUrl}")
-            ui.printInfo("Target: ${config.targetJdbcUrl}")
-
-            sourceDs = HikariFactory.createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
-            targetDs = HikariFactory.createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
+            val (source, target) = createDataSourcesWithLog(config, ui)
+            sourceDs = source
+            targetDs = target
 
             // Получение порядка таблиц
-            val reader = MetadataReader(sourceDs)
+            val reader = MetadataReader(source)
             val tables = reader.getAllTablesWithUuidPk()
             val relations = reader.getForeignKeys()
 
@@ -53,9 +50,9 @@ class MigrateSyncCommand : MigrateCommand(
 
             // Получение количества уже мигрированных записей
             ui.printInfo("Анализ текущего состояния...")
-            val mappingService = MappingServiceFactory.create(targetDs, config.mappingStrategy, config.cacheLimit)
+            val mappingService = MappingServiceFactory.create(target, config.mappingStrategy, config.cacheLimit)
             if (config.mappingStrategy == MappingStrategy.HYBRID) {
-                val pinnedTables = HybridTableSelector.selectPinnedTables(sourceDs, migrationOrder, config.cacheLimit)
+                val pinnedTables = HybridTableSelector.selectPinnedTables(source, migrationOrder, config.cacheLimit)
                 mappingService.configurePinnedTables(pinnedTables)
                 ui.printInfo("HYBRID pinned tables: ${pinnedTables.joinToString(", ").ifBlank { "none" }}")
             }
@@ -64,7 +61,7 @@ class MigrateSyncCommand : MigrateCommand(
                 mappingService.preloadAllMappings(tables)
             }
             MetricsService.registerCacheMetrics(mappingService)
-            val migrator = DataMigrator(sourceDs, targetDs, mappingService, reader, batchSize = config.batchSize)
+            val migrator = DataMigrator(source, target, mappingService, reader, batchSize = config.batchSize)
             val syncEngine = ChangeCapture(migrator, mappingService)
 
             var totalNewRows = 0L

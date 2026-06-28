@@ -6,7 +6,6 @@ import config.MigrateCommand
 import core.MetadataReader
 import logging.MetricsService
 import ui.MigrationUi
-import utils.HikariFactory
 import validation.DataIntegrityValidator
 
 /**
@@ -29,20 +28,18 @@ class MigrateValidateCommand : MigrateCommand(
         var targetDs: HikariDataSource? = null
 
         try {
-            ui.printInfo("Source: ${config.sourceJdbcUrl}")
-            ui.printInfo("Target: ${config.targetJdbcUrl}")
-
-            sourceDs = HikariFactory.createDataSource(config.sourceJdbcUrl, config.sourceUser, config.sourcePassword, config.maxPoolSize)
-            targetDs = HikariFactory.createDataSource(config.targetJdbcUrl, config.targetUser, config.targetPassword, config.maxPoolSize)
+            val (source, target) = createDataSourcesWithLog(config, ui)
+            sourceDs = source
+            targetDs = target
 
             // Получение списка таблиц
-            val reader = MetadataReader(sourceDs)
+            val reader = MetadataReader(source)
             val tables = reader.getAllTablesWithUuidPk()
 
             ui.printInfo("Таблиц для валидации: ${tables.size}")
             ui.printSectionTitle("Запуск валидации")
 
-            val validator = DataIntegrityValidator(sourceDs, targetDs)
+            val validator = DataIntegrityValidator(source, target)
             val results = validator.validateAllTables(tables)
 
             // Вывод результатов

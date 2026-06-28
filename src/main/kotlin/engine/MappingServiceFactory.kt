@@ -32,17 +32,36 @@ abstract class MappingServiceBase(
     protected val cacheLimit: Long
 ) {
     abstract fun getNewId(tableName: String, oldUuid: UUID): Long?
+
     open fun getNewIds(tableName: String, oldUuids: Collection<UUID>): Map<UUID, Long> =
-        oldUuids.distinct().mapNotNull { uuid -> getNewId(tableName, uuid)?.let { uuid to it } }.toMap()
+        oldUuids
+            .distinct()
+            .mapNotNull { uuid -> getNewId(tableName, uuid)?.let { uuid to it } }
+            .toMap()
+
     abstract fun saveMappingInMemory(oldUuid: UUID, newId: Long)
+
     abstract fun saveMappingBatch(tableName: String, mappings: Map<UUID, Long>, conn: java.sql.Connection? = null)
+
     abstract fun replaceMapping(tableName: String, oldUuid: UUID, newUuid: UUID, targetId: Long)
-    abstract fun getAllMappedUuids(tableName: String): Set<UUID>
+
+    open fun getAllMappedUuids(tableName: String): Set<UUID> {
+        targetDataSource.connection.use { conn ->
+            conn.prepareStatement("SELECT old_uuid FROM migration_mapping WHERE table_name = ?").use { pstmt ->
+                pstmt.setString(1, tableName)
+                val rs = pstmt.executeQuery()
+                val result = mutableSetOf<UUID>()
+                while (rs.next()) {
+                    result.add(rs.getObject("old_uuid") as UUID)
+                }
+                return result
+            }
+        }
+    }
 
     // Загрузка одной таблицы
     open fun preloadMappings(tableName: String) {}
 
-    // ДОБАВЛЕНО: Загрузка списка таблиц (решает ошибку Unresolved reference)
     open fun preloadAllMappings(tableNames: List<String>) {
         tableNames.forEach { preloadMappings(it) }
     }

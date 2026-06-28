@@ -126,15 +126,6 @@ object MetricsService {
         }.record(durationMs, TimeUnit.MILLISECONDS)
     }
 
-    private var _mappingCacheSizeSupplier: (() -> Number)? = null
-
-    fun registerMappingCacheSizeSupplier(supplier: () -> Number) {
-        _mappingCacheSizeSupplier = supplier
-        Gauge.builder("mapping.cache.size", supplier)
-            .description("Current size of the UUID -> BIGINT cache")
-            .register(registry)
-    }
-
     private var _replicationLagSupplier: (() -> Number)? = null
 
     fun registerReplicationLagSupplier(supplier: () -> Number) {

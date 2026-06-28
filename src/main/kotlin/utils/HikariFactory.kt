@@ -65,7 +65,12 @@ object HikariFactory {
      * Batch-сохранение маппингов в существующем соединении (без commit).
      * Вызывающий сам управляет транзакцией.
      */
-    fun saveMappingBatchInConnection(conn: java.sql.Connection, tableName: String, mappings: Map<UUID, Long>): Map<UUID, Long> {
+    fun saveMappingBatchInConnection(
+        conn: Connection,
+        tableName: String,
+        mappings: Map<UUID, Long>
+    ): Map<UUID, Long> {
+
         if (mappings.isEmpty()) return emptyMap()
 
         val baseConnection = try {
@@ -121,12 +126,6 @@ object HikariFactory {
                 return inserted
             }
         }
-    }
-
-    private fun csvValue(value: String): String {
-        val needsQuoting = value.any { it == ',' || it == '"' || it == '\n' || it == '\r' } || value == "\\N"
-        if (!needsQuoting) return value
-        return "\"" + value.replace("\"", "\"\"") + "\""
     }
 
     private fun saveMappingBatchWithJdbc(
