@@ -232,7 +232,7 @@ class DataMigrator(
                                 tableName,
                                 currentBatchNumber,
                                 batchResult.totalDurationMs,
-                                batchController.onBatchCompleted(batchResult.totalDurationMs)
+                                batchController.onBatchCompleted(batchResult.totalDurationMs, currentBatchRows.size.toLong())
                             )
 
                             // Сохранение прогресса для возможности resume
@@ -254,7 +254,7 @@ class DataMigrator(
                             tableName,
                             currentBatchNumber,
                             batchResult.totalDurationMs,
-                            batchController.onBatchCompleted(batchResult.totalDurationMs)
+                            batchController.onBatchCompleted(batchResult.totalDurationMs, currentBatchRows.size.toLong())
                         )
 
                         migrationId?.let { mid ->

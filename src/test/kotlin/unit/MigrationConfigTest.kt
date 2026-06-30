@@ -53,5 +53,7 @@ class MigrationConfigTest {
             .contains("adaptiveBatchSize: false")
             .contains("maxBatchSize: 4000")
             .contains("targetBatchDurationMs: 150")
+            .contains("adaptiveWarmupBatches: 2")
+            .contains("minAdaptiveRows: 5000")
     }
 }

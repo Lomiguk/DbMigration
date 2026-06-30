@@ -5,6 +5,7 @@ import engine.MappingServiceBase
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.PreparedStatement
+import java.util.UUID
 import javax.sql.DataSource
 
 /**
@@ -19,7 +20,12 @@ class WalApplier(
     private val logger = LoggerFactory.getLogger(WalApplier::class.java)
 
     private val fkCache: Map<String, Map<String, String>> = buildFkCache()
-    private val sessionMappingCache = java.util.concurrent.ConcurrentHashMap<java.util.UUID, Long>()
+    private val sessionMappingCache = java.util.concurrent.ConcurrentHashMap<SessionMappingKey, Long>()
+
+    private data class SessionMappingKey(
+        val tableName: String,
+        val oldUuid: UUID
+    )
 
     private fun buildFkCache(): Map<String, Map<String, String>> {
         logger.info("Building in-memory Foreign Key cache for WAL Applier...")
@@ -56,7 +62,6 @@ class WalApplier(
                         is WalInsertEvent -> applyInsertBatch(conn, batchEvents.filterIsInstance<WalInsertEvent>())
                         is WalUpdateEvent -> applyUpdateBatch(conn, batchEvents.filterIsInstance<WalUpdateEvent>())
                         is WalDeleteEvent -> applyDeleteBatch(conn, batchEvents.filterIsInstance<WalDeleteEvent>())
-                        else -> emptyList()
                     }
                     results.addAll(batchResults)
                     batchEvents.clear()
@@ -95,9 +100,10 @@ class WalApplier(
         val columnList = columns.joinToString(", ")
         val placeholders = columns.joinToString(", ") { "?" }
         val sql = "INSERT INTO $tableName ($columnList) VALUES ($placeholders)"
+        val fkMappings = resolveForeignKeyMappings(tableName, events.map { it.newTuple })
 
         val results = mutableListOf<WalProcessEvent>()
-        val mappingsToSave = mutableMapOf<java.util.UUID, Long>()
+        val mappingsToSave = mutableMapOf<UUID, Long>()
         val successfulEvents = mutableListOf<WalInsertEvent>()
 
         try {
@@ -106,7 +112,7 @@ class WalApplier(
                     try {
                         columns.forEachIndexed { index, column ->
                             val value = event.newTuple[column]
-                            pstmt.setObject(index + 1, transformValue(tableName, column, value))
+                            pstmt.setObject(index + 1, transformValue(tableName, column, value, fkMappings))
                         }
                         pstmt.addBatch()
                         successfulEvents.add(event)
@@ -125,7 +131,7 @@ class WalApplier(
                             if (oldUuidStr != null) {
                                 val oldUuid = java.util.UUID.fromString(oldUuidStr)
                                 mappingsToSave[oldUuid] = newId
-                                sessionMappingCache[oldUuid] = newId
+                                sessionMappingCache[SessionMappingKey(tableName, oldUuid)] = newId
                             }
                         }
                         results.add(WalProcessEvent(true, tableName, "INSERT", event.commitLsn, rowsAffected = 1))
@@ -148,9 +154,13 @@ class WalApplier(
         val columns = events.first().newTuple.keys.filter { it != "id" }
         val setClause = columns.joinToString(", ") { "$it = ?" }
         val sql = "UPDATE $tableName SET $setClause WHERE id = ?"
+        val targetIds = resolveMappings(tableName, events.mapNotNull { event ->
+            (event.oldTuple?.get("id") ?: event.newTuple["id"])?.toString()?.let { UUID.fromString(it) }
+        })
+        val fkMappings = resolveForeignKeyMappings(tableName, events.map { it.newTuple })
 
         val results = mutableListOf<WalProcessEvent>()
-        val mappingUpdates = mutableListOf<Triple<java.util.UUID, java.util.UUID, Long>>()
+        val mappingUpdates = mutableListOf<Triple<UUID, UUID, Long>>()
         val successfulEvents = mutableListOf<WalUpdateEvent>()
 
         try {
@@ -161,11 +171,9 @@ class WalApplier(
                         val newIdStr = event.newTuple["id"]?.toString()
 
                         val targetId = if (oldIdStr != null) {
-                            val oldUuid = java.util.UUID.fromString(oldIdStr)
-                            sessionMappingCache[oldUuid] ?: mappingService.getNewId(tableName, oldUuid)
+                            targetIds[UUID.fromString(oldIdStr)]
                         } else if (newIdStr != null) {
-                            val newUuid = java.util.UUID.fromString(newIdStr)
-                            sessionMappingCache[newUuid] ?: mappingService.getNewId(tableName, newUuid)
+                            targetIds[UUID.fromString(newIdStr)]
                         } else null
 
                         if (targetId == null) {
@@ -174,15 +182,15 @@ class WalApplier(
                         }
 
                         columns.forEachIndexed { index, column ->
-                            pstmt.setObject(index + 1, transformValue(tableName, column, event.newTuple[column]))
+                            pstmt.setObject(index + 1, transformValue(tableName, column, event.newTuple[column], fkMappings))
                         }
                         pstmt.setLong(columns.size + 1, targetId)
                         pstmt.addBatch()
 
                         if (oldIdStr != newIdStr && newIdStr != null && oldIdStr != null) {
                             val newUuid = java.util.UUID.fromString(newIdStr)
-                            mappingUpdates.add(Triple(java.util.UUID.fromString(oldIdStr), newUuid, targetId))
-                            sessionMappingCache[newUuid] = targetId
+                            mappingUpdates.add(Triple(UUID.fromString(oldIdStr), newUuid, targetId))
+                            sessionMappingCache[SessionMappingKey(tableName, newUuid)] = targetId
                         }
                         successfulEvents.add(event)
                     } catch (e: Exception) {
@@ -223,6 +231,9 @@ class WalApplier(
     private fun applyDeleteBatch(conn: Connection, events: List<WalDeleteEvent>): List<WalProcessEvent> {
         val tableName = events.first().tableName.removePrefix("public.")
         val sql = "DELETE FROM $tableName WHERE id = ?"
+        val targetIds = resolveMappings(tableName, events.mapNotNull { event ->
+            event.oldTuple["id"]?.toString()?.let { UUID.fromString(it) }
+        })
         val results = mutableListOf<WalProcessEvent>()
         val successfulEvents = mutableListOf<WalDeleteEvent>()
 
@@ -231,9 +242,9 @@ class WalApplier(
                 for (event in events) {
                     try {
                         val oldUuidStr = event.oldTuple["id"]?.toString() ?: continue
-                        val oldUuid = java.util.UUID.fromString(oldUuidStr)
+                        val oldUuid = UUID.fromString(oldUuidStr)
 
-                        val targetId = sessionMappingCache[oldUuid] ?: mappingService.getNewId(tableName, oldUuid)
+                        val targetId = targetIds[oldUuid]
                         if (targetId == null) {
                             results.add(WalProcessEvent(false, tableName, "DELETE", event.commitLsn, errorMessage = "Cannot find mapping for UUID: $oldUuid"))
                             continue
@@ -260,11 +271,61 @@ class WalApplier(
         return results
     }
 
-    private fun transformValue(tableName: String, columnName: String, value: Any?): Any? {
-        if (value !is java.util.UUID) return value
+    private fun transformValue(
+        tableName: String,
+        columnName: String,
+        value: Any?,
+        fkMappings: Map<String, Map<UUID, Long>>
+    ): Any? {
+        if (value !is UUID) return value
         val referencedTable = fkCache[tableName]?.get(columnName) ?: return value
 
-        return sessionMappingCache[value] ?: mappingService.getNewId(referencedTable, value)
-        ?: throw java.lang.IllegalStateException("Отсутствует маппинг для FK $tableName.$columnName = $value")
+        return fkMappings[referencedTable]?.get(value)
+            ?: throw java.lang.IllegalStateException("Отсутствует маппинг для FK $tableName.$columnName = $value")
+    }
+
+    private fun resolveForeignKeyMappings(
+        tableName: String,
+        tuples: List<Map<String, Any?>>
+    ): Map<String, Map<UUID, Long>> {
+        val uuidsByRefTable = mutableMapOf<String, MutableSet<UUID>>()
+        val tableFks = fkCache[tableName].orEmpty()
+
+        tuples.forEach { tuple ->
+            tableFks.forEach { (columnName, referencedTable) ->
+                val value = tuple[columnName]
+                if (value is UUID) {
+                    uuidsByRefTable.getOrPut(referencedTable) { mutableSetOf() }.add(value)
+                }
+            }
+        }
+
+        return uuidsByRefTable.mapValues { (referencedTable, uuids) ->
+            resolveMappings(referencedTable, uuids)
+        }
+    }
+
+    private fun resolveMappings(tableName: String, uuids: Collection<UUID>): Map<UUID, Long> {
+        val result = mutableMapOf<UUID, Long>()
+        val misses = mutableListOf<UUID>()
+
+        uuids.distinct().forEach { uuid ->
+            val cached = sessionMappingCache[SessionMappingKey(tableName, uuid)]
+            if (cached != null) {
+                result[uuid] = cached
+            } else {
+                misses.add(uuid)
+            }
+        }
+
+        if (misses.isNotEmpty()) {
+            val loaded = mappingService.getNewIds(tableName, misses)
+            loaded.forEach { (uuid, newId) ->
+                result[uuid] = newId
+                sessionMappingCache[SessionMappingKey(tableName, uuid)] = newId
+            }
+        }
+
+        return result
     }
 }

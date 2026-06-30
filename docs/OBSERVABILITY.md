@@ -174,6 +174,8 @@ docker compose up -d
 
 Смотрите не только total time, но и `batch_performance.csv`, `batch_phase_performance.csv` и `adaptive_batch_decisions.csv`. Если adaptive уменьшает batch на малом dataset или при слишком низком target, выигрыш может исчезнуть.
 
+По умолчанию adaptive-решения появляются только после `--adaptive-warmup-batches 2` и `--min-adaptive-rows 5000`. Если `adaptive_batch_decisions.csv` пустой для маленькой таблицы, это нормальное поведение порога включения.
+
 Меняйте только `--mapping-strategy` и, если нужно, `--cache-limit`. После завершения каждого прогона сохраните:
 - каталог `performance_logs/run_YYYYMMDD_HHMMSS/`
 - скрин или экспорт Grafana за время выполнения `copy`

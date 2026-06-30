@@ -44,6 +44,8 @@ data class MigrationConfig(
     val minBatchSize: Int = 250,
     val maxBatchSize: Int = 4_000,
     val targetBatchDurationMs: Long = 150,
+    val adaptiveWarmupBatches: Int = 2,
+    val minAdaptiveRows: Long = 5_000,
 
     // Sync settings
     val syncStrategy: String = "MEMORY_FILTERED",
@@ -65,7 +67,9 @@ data class MigrationConfig(
             enabled = adaptiveBatchSize,
             minBatchSize = minBatchSize,
             maxBatchSize = maxBatchSize,
-            targetBatchDurationMs = targetBatchDurationMs
+            targetBatchDurationMs = targetBatchDurationMs,
+            warmupBatches = adaptiveWarmupBatches,
+            minAdaptiveRows = minAdaptiveRows
         )
 
     companion object {
@@ -151,6 +155,18 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
     ).long()
         .default(150)
 
+    protected val adaptiveWarmupBatches by option(
+        "--adaptive-warmup-batches",
+        help = "Number of completed batches before adaptive resizing can start"
+    ).int()
+        .default(2)
+
+    protected val minAdaptiveRows by option(
+        "--min-adaptive-rows",
+        help = "Minimum processed rows per table before adaptive resizing can start"
+    ).long()
+        .default(5_000)
+
     // Advanced options
     protected val dryRun by option("--dry-run", "-n", help = "Dry run (no actual changes)")
         .flag()
@@ -225,6 +241,8 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
             minBatchSize = minBatchSize,
             maxBatchSize = maxBatchSize,
             targetBatchDurationMs = targetBatchDurationMs,
+            adaptiveWarmupBatches = adaptiveWarmupBatches,
+            minAdaptiveRows = minAdaptiveRows,
 
             dryRun = dryRun,
             verbose = verbose,
@@ -283,6 +301,8 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
             minBatchSize = config["minBatchSize"]?.toInt() ?: minBatchSize,
             maxBatchSize = config["maxBatchSize"]?.toInt() ?: maxBatchSize,
             targetBatchDurationMs = config["targetBatchDurationMs"]?.toLong() ?: targetBatchDurationMs,
+            adaptiveWarmupBatches = config["adaptiveWarmupBatches"]?.toInt() ?: adaptiveWarmupBatches,
+            minAdaptiveRows = config["minAdaptiveRows"]?.toLong() ?: minAdaptiveRows,
 
             dryRun = config["dryRun"]?.toBoolean() ?: dryRun,
             verbose = config["verbose"]?.toBoolean() ?: verbose,
@@ -309,6 +329,8 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
             "minBatchSize" to minBatchSize.toString(),
             "maxBatchSize" to maxBatchSize.toString(),
             "targetBatchDurationMs" to targetBatchDurationMs.toString(),
+            "adaptiveWarmupBatches" to adaptiveWarmupBatches.toString(),
+            "minAdaptiveRows" to minAdaptiveRows.toString(),
             "syncStrategy" to syncStrategy,
             "dryRun" to dryRun.toString(),
             "verbose" to verbose.toString(),
@@ -348,6 +370,8 @@ adaptiveBatchSize: false
 minBatchSize: 250
 maxBatchSize: 4000
 targetBatchDurationMs: 150
+adaptiveWarmupBatches: 2
+minAdaptiveRows: 5000
 
 # Sync Strategy (MEMORY_FILTERED, DB_FILTERED)
 syncStrategy: MEMORY_FILTERED

@@ -122,7 +122,7 @@ detailedConnectionLogging: false
 ./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 500000 --adaptive-batch-size"
 ```
 
-Эта команда использует значения по умолчанию для adaptive-режима: `--min-batch-size 250`, `--max-batch-size 4000`, `--target-batch-duration-ms 150`. На тестовом наборе `199860` строк профиль сократил время COPY примерно на 35% относительно фиксированного batch `1000`. На малых наборах или при слишком низком target, например `50ms`, режим может не дать выигрыша из-за лишнего дробления batch.
+Эта команда использует значения по умолчанию для adaptive-режима: `--min-batch-size 250`, `--max-batch-size 4000`, `--target-batch-duration-ms 150`, `--adaptive-warmup-batches 2`, `--min-adaptive-rows 5000`. На тестовом наборе `199860` строк профиль сократил время COPY примерно на 35% относительно фиксированного batch `1000`. На малых наборах или при слишком низком target, например `50ms`, режим может не дать выигрыша из-за лишнего дробления batch.
 
 ## Тестирование
 

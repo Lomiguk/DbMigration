@@ -50,6 +50,8 @@
 | `--min-batch-size` | — | Минимальный размер batch в adaptive-режиме | 250 |
 | `--max-batch-size` | — | Максимальный размер batch в adaptive-режиме | 4000 |
 | `--target-batch-duration-ms` | — | Целевое время batch для adaptive-режима | 150 |
+| `--adaptive-warmup-batches` | — | Сколько первых batch не менять размер | 2 |
+| `--min-adaptive-rows` | — | Минимум строк по таблице до изменения batch | 5000 |
 | `--cache-limit` | `-c` | Лимит кэша | 500000 |
 | `--max-pool-size` | `-m` | Размер пула соединений | 10 |
 | `--dry-run` | `-n` | Пробный запуск | false |
@@ -212,6 +214,8 @@ adaptiveBatchSize: false
 minBatchSize: 250
 maxBatchSize: 4000
 targetBatchDurationMs: 150
+adaptiveWarmupBatches: 2
+minAdaptiveRows: 5000
 
 syncStrategy: MEMORY_FILTERED
 
@@ -404,9 +408,11 @@ verbose: true
 Алгоритм простой:
 
 1. первый batch берёт размер из `--batch-size`;
-2. если batch заметно быстрее целевого времени, следующий размер увеличивается на 25%;
-3. если batch заметно медленнее целевого времени, следующий размер уменьшается в 2 раза;
-4. размер всегда ограничен `--min-batch-size` и `--max-batch-size`.
+2. первые `--adaptive-warmup-batches` batch не меняют размер;
+3. таблица должна набрать минимум `--min-adaptive-rows` обработанных строк;
+4. если batch заметно быстрее целевого времени, следующий размер увеличивается на 25%;
+5. если batch заметно медленнее целевого времени, следующий размер уменьшается в 2 раза;
+6. размер всегда ограничен `--min-batch-size` и `--max-batch-size`.
 
 Рекомендуемый стартовый профиль уже задан в defaults:
 
@@ -417,7 +423,7 @@ verbose: true
 Эквивалентная явная запись:
 
 ```bash
-./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 500000 --adaptive-batch-size --min-batch-size 250 --max-batch-size 4000 --target-batch-duration-ms 150"
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 500000 --adaptive-batch-size --min-batch-size 250 --max-batch-size 4000 --target-batch-duration-ms 150 --adaptive-warmup-batches 2 --min-adaptive-rows 5000"
 ```
 
 Практические ориентиры:
@@ -428,6 +434,7 @@ verbose: true
 | Малый dataset | Выигрыш может быть нулевым |
 | Слишком низкий target, например `50ms` | Batch может дробиться и результат может ухудшиться |
 | Слишком высокий `max-batch-size` | Возможен рост latency batch и памяти без заметного выигрыша |
+| Малые справочники | Обычно остаются на фиксированном batch из-за `minAdaptiveRows` |
 
 Для релизной проверки сравнивайте adaptive и baseline на одинаковом seed после полного сброса Docker volume. В тестовом стенде профиль `150ms / 4000` на `199860` строк сократил COPY примерно на 35% относительно фиксированного `batchSize=1000`, а полный сценарий `copy -> WAL replicate -> validate` прошёл с `19986/19986` применённых WAL-событий и `20/20` валидных таблиц.
 
@@ -469,6 +476,10 @@ timestamp,table,batch_number,previous_batch_size,next_batch_size,batch_duration_
 ```csv
 timestamp,slot_name,events_read,events_applied,events_failed,read_duration_ms,apply_duration_ms,total_duration_ms,last_lsn
 ```
+
+### WAL apply
+
+`replicate` применяет WAL-события batch-операциями. Перед применением INSERT/UPDATE/DELETE `WalApplier` собирает UUID, которые нужны для FK и поиска target id, и запрашивает mapping через bulk lookup `getNewIds()`. Это уменьшает число повторных обращений к `migration_mapping` по сравнению с построчным `getNewId()`.
 
 ### Ожидаемые метрики (1M записей)
 
