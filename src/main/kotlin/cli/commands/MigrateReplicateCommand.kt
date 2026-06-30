@@ -116,6 +116,8 @@ class MigrateReplicateCommand : MigrateCommand(
                     ui.printError("Неудачных событий: ${result.eventsFailed}")
                 }
                 ui.printInfo("Duration: ${duration}ms")
+                ui.printInfo("Read duration: ${result.readDuration}ms")
+                ui.printInfo("Apply duration: ${result.applyDuration}ms")
                 ui.printInfo("Success rate: ${"%.1f".format(result.successRate)}%")
                 ui.printInfo("Last LSN: ${result.lastLsn}")
                 ui.printInfo("Lag: ${replicationService.getLagPretty()}")

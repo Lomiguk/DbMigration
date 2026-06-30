@@ -101,13 +101,14 @@ class MigrateResumeCommand : MigrateCommand(
             }
             MetricsService.registerCacheMetrics(mappingService)
             val migrator = DataMigrator(
-                sourceDs,
-                targetDs,
-                mappingService,
-                reader,
-                stateRepository,
-                migrationId,
-                config.batchSize
+                sourceDataSource = sourceDs,
+                targetDataSource = targetDs,
+                mappingService = mappingService,
+                metadataReader = reader,
+                stateRepository = stateRepository,
+                migrationId = migrationId,
+                batchSize = config.batchSize,
+                adaptiveBatchConfig = config.adaptiveBatchConfig
             )
 
             var totalRows = 0L

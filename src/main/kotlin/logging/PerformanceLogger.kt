@@ -1,6 +1,7 @@
 package logging
 
 import org.slf4j.LoggerFactory
+import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
@@ -27,6 +28,8 @@ object PerformanceLogger {
     private var mappingLog: PrintWriter? = null
     private var dbLookupLog: PrintWriter? = null
     private var cacheLog: PrintWriter? = null
+    private var adaptiveBatchLog: PrintWriter? = null
+    private var walSyncLog: PrintWriter? = null
     private var jvmLog: PrintWriter? = null
     private var runConfigLog: PrintWriter? = null
     private var poolLog: PrintWriter? = null
@@ -49,7 +52,7 @@ object PerformanceLogger {
         if (initialized) return
 
         // Создаем директорию конкретного запуска
-        java.io.File(runLogDir).mkdirs()
+        File(runLogDir).mkdirs()
 
         // Файлы теперь называются просто и понятно, так как они лежат в папке запуска
         batchLog = PrintWriter(FileWriter("$runLogDir/batch_performance.csv"))
@@ -57,16 +60,20 @@ object PerformanceLogger {
         mappingLog = PrintWriter(FileWriter("$runLogDir/mapping_performance.csv"))
         dbLookupLog = PrintWriter(FileWriter("$runLogDir/mapping_db_lookup.csv"))
         cacheLog = PrintWriter(FileWriter("$runLogDir/cache_snapshots.csv"))
+        adaptiveBatchLog = PrintWriter(FileWriter("$runLogDir/adaptive_batch_decisions.csv"))
+        walSyncLog = PrintWriter(FileWriter("$runLogDir/wal_sync_performance.csv"))
         jvmLog = PrintWriter(FileWriter("$runLogDir/jvm_snapshots.csv"))
         runConfigLog = PrintWriter(FileWriter("$runLogDir/run_config.txt"))
         poolLog = PrintWriter(FileWriter("$runLogDir/connection_pool.csv"))
         summaryLog = PrintWriter(FileWriter("$runLogDir/summary.txt"))
         
-        batchLog?.println("timestamp,table,batch_number,records_total,insert_duration_ms,mapping_duration_ms,commit_duration_ms,total_batch_ms,records_per_sec")
-        batchPhaseLog?.println("timestamp,table,batch_number,phase,duration_ms,records_total,records_per_sec")
+        batchLog?.println("timestamp,table,batch_number,batch_size,records_total,insert_duration_ms,mapping_duration_ms,commit_duration_ms,total_batch_ms,records_per_sec")
+        batchPhaseLog?.println("timestamp,table,batch_number,batch_size,phase,duration_ms,records_total,records_per_sec")
         mappingLog?.println("timestamp,table,batch_number,records_saved,mapping_duration_ms,records_per_sec")
         dbLookupLog?.println("timestamp,strategy,table,duration_ms,found")
         cacheLog?.println("timestamp,strategy,cache_size,lazy_cache_size,pinned_cache_size,hit_rate,eviction_count,request_count,miss_count")
+        adaptiveBatchLog?.println("timestamp,table,batch_number,previous_batch_size,next_batch_size,batch_duration_ms,target_duration_ms,reason")
+        walSyncLog?.println("timestamp,slot_name,events_read,events_applied,events_failed,read_duration_ms,apply_duration_ms,total_duration_ms,last_lsn")
         jvmLog?.println("timestamp,heap_used_bytes,heap_committed_bytes,heap_max_bytes,non_heap_used_bytes,gc_count,gc_time_ms,available_processors")
         poolLog?.println("timestamp,table,active_connections,idle_connections,total_connections,waiting_threads")
         
@@ -88,6 +95,7 @@ object PerformanceLogger {
             runConfigLog?.println("$key=$value")
         }
         runConfigLog?.flush()
+        writeRunManifest(commandName, properties)
     }
 
     fun logMappingDbLookup(strategy: String, tableName: String, durationMs: Long, found: Boolean) {
@@ -103,13 +111,14 @@ object PerformanceLogger {
         batchNumber: Long,
         phase: String,
         durationMs: Long,
-        recordsTotal: Long
+        recordsTotal: Long,
+        batchSize: Int = recordsTotal.toInt()
     ) {
         ensureInitialized()
 
         val elapsed = System.currentTimeMillis() - totalStartTime
         val recordsPerSec = if (durationMs > 0) recordsTotal * 1000 / durationMs else 0
-        batchPhaseLog?.println("$elapsed,$tableName,$batchNumber,$phase,$durationMs,$recordsTotal,$recordsPerSec")
+        batchPhaseLog?.println("$elapsed,$tableName,$batchNumber,$batchSize,$phase,$durationMs,$recordsTotal,$recordsPerSec")
         batchPhaseLog?.flush()
     }
 
@@ -149,6 +158,7 @@ object PerformanceLogger {
     fun logBatch(
         tableName: String,
         batchNumber: Long,
+        batchSize: Int,
         totalRecords: Long,
         insertDuration: Long,
         mappingDuration: Long,
@@ -162,7 +172,7 @@ object PerformanceLogger {
         val recordsPerSec = if (totalBatchDuration > 0) totalRecords * 1000 / totalBatchDuration else 0
 
         // CSV лог
-        batchLog?.println("$elapsed,$tableName,$batchNumber,$totalRecords,$insertDuration,$mappingDuration,$commitDuration,$totalBatchDuration,$recordsPerSec")
+        batchLog?.println("$elapsed,$tableName,$batchNumber,$batchSize,$totalRecords,$insertDuration,$mappingDuration,$commitDuration,$totalBatchDuration,$recordsPerSec")
         batchLog?.flush()
 
         // Накопление статистики
@@ -208,6 +218,43 @@ object PerformanceLogger {
 
         mappingLog?.println("$elapsed,$tableName,$batchNumber,$recordsSaved,$durationMs,$recordsPerSec")
         mappingLog?.flush()
+    }
+
+    fun logAdaptiveBatchDecision(
+        tableName: String,
+        batchNumber: Long,
+        previousBatchSize: Int,
+        nextBatchSize: Int,
+        batchDurationMs: Long,
+        targetDurationMs: Long,
+        reason: String
+    ) {
+        ensureInitialized()
+
+        val elapsed = System.currentTimeMillis() - totalStartTime
+        adaptiveBatchLog?.println(
+            "$elapsed,$tableName,$batchNumber,$previousBatchSize,$nextBatchSize,$batchDurationMs,$targetDurationMs,${csv(reason)}"
+        )
+        adaptiveBatchLog?.flush()
+    }
+
+    fun logWalSync(
+        slotName: String,
+        eventsRead: Int,
+        eventsApplied: Int,
+        eventsFailed: Int,
+        readDurationMs: Long,
+        applyDurationMs: Long,
+        totalDurationMs: Long,
+        lastLsn: String
+    ) {
+        ensureInitialized()
+
+        val elapsed = System.currentTimeMillis() - totalStartTime
+        walSyncLog?.println(
+            "$elapsed,$slotName,$eventsRead,$eventsApplied,$eventsFailed,$readDurationMs,$applyDurationMs,$totalDurationMs,$lastLsn"
+        )
+        walSyncLog?.flush()
     }
 
     /**
@@ -288,8 +335,11 @@ object PerformanceLogger {
         summaryLog?.println("  - $runLogDir/mapping_performance.csv")
         summaryLog?.println("  - $runLogDir/mapping_db_lookup.csv")
         summaryLog?.println("  - $runLogDir/cache_snapshots.csv")
+        summaryLog?.println("  - $runLogDir/adaptive_batch_decisions.csv")
+        summaryLog?.println("  - $runLogDir/wal_sync_performance.csv")
         summaryLog?.println("  - $runLogDir/jvm_snapshots.csv")
         summaryLog?.println("  - $runLogDir/run_config.txt")
+        summaryLog?.println("  - $runLogDir/run_manifest.json")
         summaryLog?.println("  - $runLogDir/connection_pool.csv")
         summaryLog?.println("  - $runLogDir/summary.txt")
         summaryLog?.println("=============================================================")
@@ -300,6 +350,8 @@ object PerformanceLogger {
         mappingLog?.flush()
         dbLookupLog?.flush()
         cacheLog?.flush()
+        adaptiveBatchLog?.flush()
+        walSyncLog?.flush()
         jvmLog?.flush()
         runConfigLog?.flush()
         poolLog?.flush()
@@ -310,6 +362,8 @@ object PerformanceLogger {
         mappingLog?.close()
         dbLookupLog?.close()
         cacheLog?.close()
+        adaptiveBatchLog?.close()
+        walSyncLog?.close()
         jvmLog?.close()
         runConfigLog?.close()
         poolLog?.close()
@@ -346,6 +400,54 @@ object PerformanceLogger {
             "$elapsed,${heap.used},${heap.committed},${heap.max},${nonHeap.used},$gcCount,$gcTime,${Runtime.getRuntime().availableProcessors()}"
         )
         jvmLog?.flush()
+    }
+
+    private fun writeRunManifest(commandName: String, properties: Map<String, String>) {
+        val manifest = buildString {
+            appendLine("{")
+            appendLine("  \"command\": ${json(commandName)},")
+            appendLine("  \"started_at\": ${json(SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date()))},")
+            appendLine("  \"working_directory\": ${json(File(".").absoluteFile.normalize().path)},")
+            appendLine("  \"git_branch\": ${json(runCommand("git", "rev-parse", "--abbrev-ref", "HEAD"))},")
+            appendLine("  \"git_commit\": ${json(runCommand("git", "rev-parse", "HEAD"))},")
+            appendLine("  \"java_version\": ${json(System.getProperty("java.version"))},")
+            appendLine("  \"os_name\": ${json(System.getProperty("os.name"))},")
+            appendLine("  \"available_processors\": ${Runtime.getRuntime().availableProcessors()},")
+            appendLine("  \"properties\": {")
+            properties.toSortedMap().entries.forEachIndexed { index, entry ->
+                val suffix = if (index < properties.size - 1) "," else ""
+                appendLine("    ${json(entry.key)}: ${json(entry.value)}$suffix")
+            }
+            appendLine("  }")
+            appendLine("}")
+        }
+
+        File("$runLogDir/run_manifest.json").writeText(manifest)
+    }
+
+    private fun runCommand(vararg command: String): String {
+        return try {
+            val process = ProcessBuilder(*command)
+                .redirectErrorStream(true)
+                .start()
+            if (!process.waitFor(1, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                "unknown"
+            } else {
+                process.inputStream.bufferedReader().readText().trim().ifBlank { "unknown" }
+            }
+        } catch (_: Exception) {
+            "unknown"
+        }
+    }
+
+    private fun json(value: String): String =
+        "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+    private fun csv(value: String): String {
+        val needsQuoting = value.any { it == ',' || it == '"' || it == '\n' || it == '\r' }
+        if (!needsQuoting) return value
+        return "\"" + value.replace("\"", "\"\"") + "\""
     }
 
 }

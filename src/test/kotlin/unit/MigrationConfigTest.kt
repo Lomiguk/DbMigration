@@ -50,5 +50,8 @@ class MigrationConfigTest {
             .contains("sourceHost: localhost")
             .contains("targetDatabase: target_db")
             .contains("syncStrategy: MEMORY_FILTERED")
+            .contains("adaptiveBatchSize: false")
+            .contains("maxBatchSize: 4000")
+            .contains("targetBatchDurationMs: 150")
     }
 }

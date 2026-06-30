@@ -9,6 +9,7 @@
 - **Zero-downtime миграция** благодаря логической репликации (CDC через WAL).
 - Защита от OutOfMemory при помощи серверных курсоров и bounded-cache стратегии.
 - Три стратегии mapping-кэша: **EAGER**, **LAZY**, **HYBRID**.
+- Opt-in адаптивный размер batch для ускорения больших `copy`-прогонов.
 - Воспроизводимая генерация тестовых данных через `generate-data --seed`.
 - Автоматическая топологическая сортировка графа таблиц (JGraphT).
 - Встроенный стек **Observability** (Prometheus + Grafana).
@@ -27,6 +28,9 @@ docker compose up -d
 
 # 4. Первичная миграция данных (без индексов)
 ./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000"
+
+# 4a. Для средних и больших объёмов можно включить адаптивный batch
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000 --adaptive-batch-size"
 
 # 4b. Или вместо предыдущей команды: с переносом индексов из source (рекомендуется)
 ./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000 --migrate-indexes"
@@ -89,6 +93,7 @@ detailedConnectionLogging: false
 | `copy` | Выполнить первичную миграцию данных |
 | `copy --migrate-indexes` | Перенести реальные индексы из source в target |
 | `copy --create-fk-indexes` | Создать индексы на FK-колонках в target |
+| `copy --adaptive-batch-size` | Включить адаптивный размер batch для `copy` |
 | `sync` | Выполнить дельта-синхронизацию новых строк |
 | `replicate` | Применить изменения через WAL/CDC |
 | `replicate --continuous` | Запустить непрерывную WAL-репликацию |
@@ -106,6 +111,18 @@ detailedConnectionLogging: false
 | `HYBRID` | Держит малые таблицы в pinned cache, остальные через bounded lazy cache | Компромисс скорости и памяти | Польза зависит от FK-профиля данных |
 
 Для сравнения режимов используйте чистый цикл: `docker compose down -v`, `docker compose up -d`, `generate-data --seed <N>`, затем `copy`. Метрики каждого запуска сохраняются в `performance_logs/run_<timestamp>/`.
+
+## Адаптивный размер batch
+
+По умолчанию миграция использует фиксированный `--batch-size 1000`. Режим `--adaptive-batch-size` оставлен выключенным по умолчанию и меняет размер batch только после завершения очередного batch, ориентируясь на его длительность.
+
+Проверенный стартовый профиль:
+
+```bash
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 500000 --adaptive-batch-size"
+```
+
+Эта команда использует значения по умолчанию для adaptive-режима: `--min-batch-size 250`, `--max-batch-size 4000`, `--target-batch-duration-ms 150`. На тестовом наборе `199860` строк профиль сократил время COPY примерно на 35% относительно фиксированного batch `1000`. На малых наборах или при слишком низком target, например `50ms`, режим может не дать выигрыша из-за лишнего дробления batch.
 
 ## Тестирование
 
@@ -140,6 +157,7 @@ Unit-тесты не требуют Docker:
 - Инструмент рассчитан на миграцию PostgreSQL-схем с UUID primary keys в target-схему с BIGINT/BIGSERIAL identifiers.
 - Перед production-запуском сделайте backup source/target БД.
 - После `copy` или `replicate` запускайте `validate`.
+- `--adaptive-batch-size` включайте после benchmark на своём dataset; для небольших таблиц фиксированный batch может быть не хуже.
 - Для production-нагрузки предпочтительно использовать `copy --migrate-indexes`, чтобы перенести реальные индексы source-схемы.
 - `copy --create-fk-indexes` является опциональным режимом и создает индексы только по FK-колонкам.
 

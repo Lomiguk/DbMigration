@@ -153,6 +153,8 @@ connectionTimeout = 30000
 
 `batchSize` задаётся через CLI/config и используется `DataMigrator` при `copy`, `resume` и `sync`. Генератор тестовых данных использует собственный размер batch для массовой вставки и не задаёт размер batch миграции.
 
+Опционально включается `adaptiveBatchSize`. Тогда первый batch использует `batchSize`, а затем `AdaptiveBatchController` меняет размер следующего batch по фактической длительности предыдущего. Режим не меняет границы транзакций: каждый batch по-прежнему обрабатывается и фиксируется отдельно. Проверенный стартовый профиль: `minBatchSize=250`, `maxBatchSize=4000`, `targetBatchDurationMs=150`.
+
 ### 6. Таблица migration_state
 
 **Почему:** Transaction-safe, не теряется при рестарте, не требует Redis
@@ -185,7 +187,7 @@ CREATE TABLE migration_state (
 
 **Почему:** Компактность (~10KB на 1000 батчей), легко парсить (Excel, pandas)
 
-**Файлы:** `performance_logs/run_YYYYMMDD_HHMMSS/run_config.txt`, `summary.txt`, `batch_performance.csv`, `batch_phase_performance.csv`, `mapping_performance.csv`, `mapping_db_lookup.csv`, `cache_snapshots.csv`, `jvm_snapshots.csv`, `connection_pool.csv`
+**Файлы:** `performance_logs/run_YYYYMMDD_HHMMSS/run_config.txt`, `run_manifest.json`, `summary.txt`, `batch_performance.csv`, `batch_phase_performance.csv`, `adaptive_batch_decisions.csv`, `wal_sync_performance.csv`, `mapping_performance.csv`, `mapping_db_lookup.csv`, `cache_snapshots.csv`, `jvm_snapshots.csv`, `connection_pool.csv`
 
 ### 9. Per-batch транзакции
 

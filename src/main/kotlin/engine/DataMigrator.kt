@@ -7,7 +7,6 @@ import logging.PerformanceLogger
 import org.postgresql.copy.CopyManager
 import org.postgresql.core.BaseConnection
 import state.StateRepository
-import utils.csvValue as csvTextValue
 import java.io.StringReader
 import java.sql.Connection
 import java.util.*
@@ -21,8 +20,13 @@ class DataMigrator(
     private val metadataReader: MetadataReader,
     private val stateRepository: StateRepository? = null,
     private val migrationId: String? = null,
-    private val batchSize: Int = 1000
+    private val batchSize: Int = 1000,
+    private val adaptiveBatchConfig: AdaptiveBatchConfig = AdaptiveBatchConfig.DISABLED
 ) {
+    private data class BatchResult(
+        val totalDurationMs: Long
+    )
+
     private data class PendingRow(
         val oldPk: UUID,
         val values: Map<String, Any?>
@@ -198,9 +202,11 @@ class DataMigrator(
 
                     val targetColumns = listOf("id") + columns
                     val currentBatchRows = mutableListOf<PendingRow>()
+                    val batchController = AdaptiveBatchController(adaptiveBatchConfig, effectiveBatchSize)
                     var newRecordsInTable = 0L
                     var currentBatchNumber: Long = resumeBatchNumber
                     var lastUuid: UUID? = null
+                    var sourceReadStart = System.currentTimeMillis()
 
                     while (rs.next()) {
                         // TODO where is check?
@@ -217,9 +223,17 @@ class DataMigrator(
                         newRecordsInTable++
                         lastUuid = oldPk
 
-                        if (newRecordsInTable % effectiveBatchSize == 0L) {
+                        if (currentBatchRows.size >= batchController.currentBatchSize) {
                             currentBatchNumber++
-                            processBatch(targetConn, tableName, targetColumns, columns, foreignKeys, currentBatchRows, currentBatchNumber)
+                            val batchSizeForThisBatch = batchController.currentBatchSize
+                            logBatchPhase(tableName, currentBatchNumber, "source_read", System.currentTimeMillis() - sourceReadStart, currentBatchRows.size.toLong(), batchSizeForThisBatch)
+                            val batchResult = processBatch(targetConn, tableName, targetColumns, columns, foreignKeys, currentBatchRows, currentBatchNumber, batchSizeForThisBatch)
+                            logAdaptiveBatchDecision(
+                                tableName,
+                                currentBatchNumber,
+                                batchResult.totalDurationMs,
+                                batchController.onBatchCompleted(batchResult.totalDurationMs)
+                            )
 
                             // Сохранение прогресса для возможности resume
                             migrationId?.let { mid ->
@@ -227,12 +241,21 @@ class DataMigrator(
                             }
 
                             currentBatchRows.clear()
+                            sourceReadStart = System.currentTimeMillis()
                         }
                     }
 
                     if (currentBatchRows.isNotEmpty()) {
                         currentBatchNumber++
-                        processBatch(targetConn, tableName, targetColumns, columns, foreignKeys, currentBatchRows, currentBatchNumber)
+                        val batchSizeForThisBatch = batchController.currentBatchSize
+                        logBatchPhase(tableName, currentBatchNumber, "source_read", System.currentTimeMillis() - sourceReadStart, currentBatchRows.size.toLong(), batchSizeForThisBatch)
+                        val batchResult = processBatch(targetConn, tableName, targetColumns, columns, foreignKeys, currentBatchRows, currentBatchNumber, batchSizeForThisBatch)
+                        logAdaptiveBatchDecision(
+                            tableName,
+                            currentBatchNumber,
+                            batchResult.totalDurationMs,
+                            batchController.onBatchCompleted(batchResult.totalDurationMs)
+                        )
 
                         migrationId?.let { mid ->
                             stateRepository?.saveProgress(mid, tableName, newRecordsInTable, lastUuid, currentBatchNumber)
@@ -269,8 +292,9 @@ class DataMigrator(
         columns: List<String>,
         foreignKeys: List<ForeignKeyColumn>,
         rows: List<PendingRow>,
-        batchNumber: Long
-    ) {
+        batchNumber: Long,
+        batchSizeForThisBatch: Int
+    ): BatchResult {
         val batchStart = System.currentTimeMillis()
         val recordsTotal = rows.size.toLong()
 
@@ -278,17 +302,17 @@ class DataMigrator(
         val foreignKeysByColumn = foreignKeys.associateBy { it.columnName }
         val mappedForeignKeys = resolveForeignKeys(foreignKeysByColumn, rows)
         val fkLookupDuration = System.currentTimeMillis() - phaseStart
-        logBatchPhase(tableName, batchNumber, "fk_lookup", fkLookupDuration, recordsTotal)
+        logBatchPhase(tableName, batchNumber, "fk_lookup", fkLookupDuration, recordsTotal, batchSizeForThisBatch)
 
         phaseStart = System.currentTimeMillis()
         val allocatedIds = allocateTargetIds(targetConn, tableName, rows.size)
         val idAllocationDuration = System.currentTimeMillis() - phaseStart
-        logBatchPhase(tableName, batchNumber, "id_allocation", idAllocationDuration, recordsTotal)
+        logBatchPhase(tableName, batchNumber, "id_allocation", idAllocationDuration, recordsTotal, batchSizeForThisBatch)
 
         phaseStart = System.currentTimeMillis()
         val copyPayload = buildCopyPayload(columns, foreignKeysByColumn, mappedForeignKeys, rows, allocatedIds)
         val csvBuildDuration = System.currentTimeMillis() - phaseStart
-        logBatchPhase(tableName, batchNumber, "csv_build", csvBuildDuration, recordsTotal)
+        logBatchPhase(tableName, batchNumber, "csv_build", csvBuildDuration, recordsTotal, batchSizeForThisBatch)
 
         // Замер INSERT через Micrometer Timer
         val insertTimer = MetricsService.getMigrationBatchTimer(tableName, "insert")
@@ -297,7 +321,7 @@ class DataMigrator(
             copyRows(targetConn, tableName, targetColumns, copyPayload)
             System.currentTimeMillis() - startedAt
         }!!
-        logBatchPhase(tableName, batchNumber, "copy_data", insertDuration, recordsTotal)
+        logBatchPhase(tableName, batchNumber, "copy_data", insertDuration, recordsTotal, batchSizeForThisBatch)
 
         val batchMappings = mutableMapOf<UUID, Long>()
         rows.forEachIndexed { index, row ->
@@ -311,12 +335,12 @@ class DataMigrator(
             mappingService.saveMappingBatch(tableName, batchMappings, targetConn)
             System.currentTimeMillis() - startedAt
         }!!
-        logBatchPhase(tableName, batchNumber, "mapping_save", mappingDuration, recordsTotal)
+        logBatchPhase(tableName, batchNumber, "mapping_save", mappingDuration, recordsTotal, batchSizeForThisBatch)
 
         phaseStart = System.currentTimeMillis()
         targetConn.commit()
         val commitDuration = System.currentTimeMillis() - phaseStart
-        logBatchPhase(tableName, batchNumber, "commit", commitDuration, recordsTotal)
+        logBatchPhase(tableName, batchNumber, "commit", commitDuration, recordsTotal, batchSizeForThisBatch)
 
         val totalBatchDuration = System.currentTimeMillis() - batchStart
 
@@ -329,6 +353,7 @@ class DataMigrator(
         PerformanceLogger.logBatch(
             tableName = tableName,
             batchNumber = batchNumber,
+            batchSize = batchSizeForThisBatch,
             totalRecords = rows.size.toLong(),
             insertDuration = insertDuration,
             mappingDuration = mappingDuration,
@@ -342,6 +367,32 @@ class DataMigrator(
             recordsSaved = rows.size.toLong(),
             durationMs = mappingDuration
         )
+
+        return BatchResult(totalBatchDuration)
+    }
+
+    private fun logAdaptiveBatchDecision(
+        tableName: String,
+        batchNumber: Long,
+        batchDurationMs: Long,
+        decision: AdaptiveBatchDecision?
+    ) {
+        if (decision == null) return
+
+        PerformanceLogger.logAdaptiveBatchDecision(
+            tableName = tableName,
+            batchNumber = batchNumber,
+            previousBatchSize = decision.previousBatchSize,
+            nextBatchSize = decision.nextBatchSize,
+            batchDurationMs = batchDurationMs,
+            targetDurationMs = adaptiveBatchConfig.targetBatchDurationMs,
+            reason = decision.reason
+        )
+
+        println(
+            "Adaptive batch $tableName#$batchNumber: " +
+                "${decision.previousBatchSize} -> ${decision.nextBatchSize} (${decision.reason})"
+        )
     }
 
     private fun logBatchPhase(
@@ -349,9 +400,10 @@ class DataMigrator(
         batchNumber: Long,
         phase: String,
         durationMs: Long,
-        recordsTotal: Long
+        recordsTotal: Long,
+        batchSizeForThisBatch: Int = recordsTotal.toInt()
     ) {
-        PerformanceLogger.logBatchPhase(tableName, batchNumber, phase, durationMs, recordsTotal)
+        PerformanceLogger.logBatchPhase(tableName, batchNumber, phase, durationMs, recordsTotal, batchSizeForThisBatch)
         MetricsService.getMigrationBatchTimer(tableName, phase).record(durationMs, TimeUnit.MILLISECONDS)
     }
 
@@ -394,7 +446,9 @@ class DataMigrator(
             is Boolean -> value.toString()
             else -> value.toString()
         }
-        return csvTextValue(text)
+        val needsQuoting = text.any { it == ',' || it == '"' || it == '\n' || it == '\r' } || text == "\\N"
+        if (!needsQuoting) return text
+        return "\"" + text.replace("\"", "\"\"") + "\""
     }
 
     private fun quoteIdentifier(identifier: String): String =

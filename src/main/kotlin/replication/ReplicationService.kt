@@ -3,6 +3,7 @@ package replication
 import core.MetadataReader
 import engine.MappingServiceBase
 import logging.MetricsService
+import logging.PerformanceLogger
 import org.slf4j.LoggerFactory
 import java.time.LocalDateTime
 import javax.sql.DataSource
@@ -122,24 +123,27 @@ class ReplicationService(
         logger.info("Starting delta sync...")
 
         val startTime = LocalDateTime.now()
+        val readStartMs = System.currentTimeMillis()
         val events = mutableListOf<WalEvent>()
-        var timeout = 5000L // 5 секунд на чтение
 
-        // Читаем доступные события
-        while (timeout > 0) {
+        // Read currently available events. WalReader.readBatch() already has an idle timeout,
+        // so one empty batch is enough to conclude that the current delta is drained.
+        while (true) {
             val batch = walReader.readBatch(config.batchSize)
             if (batch.isNotEmpty()) {
                 events.addAll(batch)
-                timeout = 5000L // Сбрасываем таймаут при получении данных
             } else {
-                timeout -= config.pollIntervalMs
+                break
             }
         }
+        val readDurationMs = System.currentTimeMillis() - readStartMs
 
         logger.info("Read ${events.size} events for delta sync")
 
         // Применяем события
+        val applyStartMs = System.currentTimeMillis()
         val results = walApplier.applyBatch(events)
+        val applyDurationMs = System.currentTimeMillis() - applyStartMs
 
         // Считаем статистику
         val successCount = results.count { it.success }
@@ -153,11 +157,25 @@ class ReplicationService(
             lastLsn = it.lsn
         }
 
+        val totalDurationMs = java.time.Duration.between(startTime, LocalDateTime.now()).toMillis()
+        PerformanceLogger.logWalSync(
+            slotName = config.slotName,
+            eventsRead = events.size,
+            eventsApplied = successCount,
+            eventsFailed = failedCount,
+            readDurationMs = readDurationMs,
+            applyDurationMs = applyDurationMs,
+            totalDurationMs = totalDurationMs,
+            lastLsn = lastLsn
+        )
+
         return DeltaSyncResult(
             eventsRead = events.size,
             eventsApplied = successCount,
             eventsFailed = failedCount,
-            duration = java.time.Duration.between(startTime, LocalDateTime.now()).toMillis(),
+            duration = totalDurationMs,
+            readDuration = readDurationMs,
+            applyDuration = applyDurationMs,
             lastLsn = lastLsn
         )
     }
@@ -207,6 +225,8 @@ data class DeltaSyncResult(
     val eventsApplied: Int,
     val eventsFailed: Int,
     val duration: Long,
+    val readDuration: Long,
+    val applyDuration: Long,
     val lastLsn: String
 ) {
     val successRate: Double

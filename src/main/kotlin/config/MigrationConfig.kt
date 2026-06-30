@@ -5,6 +5,7 @@ import com.github.ajalt.clikt.parameters.options.*
 import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.parameters.types.long
 import com.zaxxer.hikari.HikariDataSource
+import engine.AdaptiveBatchConfig
 import engine.MappingStrategy
 import logging.DetailedConnectionLogger
 import logging.MetricsService
@@ -39,6 +40,10 @@ data class MigrationConfig(
     val mappingStrategy: MappingStrategy = MappingStrategy.EAGER,
     val maxPoolSize: Int = 10,
     val connectionTimeout: Long = 30000,
+    val adaptiveBatchSize: Boolean = false,
+    val minBatchSize: Int = 250,
+    val maxBatchSize: Int = 4_000,
+    val targetBatchDurationMs: Long = 150,
 
     // Sync settings
     val syncStrategy: String = "MEMORY_FILTERED",
@@ -54,6 +59,14 @@ data class MigrationConfig(
 
     val targetJdbcUrl: String
         get() = "jdbc:postgresql://$targetHost:$targetPort/$targetDatabase"
+
+    val adaptiveBatchConfig: AdaptiveBatchConfig
+        get() = AdaptiveBatchConfig(
+            enabled = adaptiveBatchSize,
+            minBatchSize = minBatchSize,
+            maxBatchSize = maxBatchSize,
+            targetBatchDurationMs = targetBatchDurationMs
+        )
 
     companion object {
         const val DEFAULT_CONFIG_FILE = "migration-config.yaml"
@@ -118,6 +131,25 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
     protected val maxPoolSize by option("--max-pool-size", "-m", help = "Maximum connection pool size")
         .int()
         .default(10)
+
+    protected val adaptiveBatchSize by option(
+        "--adaptive-batch-size",
+        help = "Enable adaptive batch sizing based on observed batch duration"
+    ).flag()
+
+    protected val minBatchSize by option("--min-batch-size", help = "Minimum adaptive batch size")
+        .int()
+        .default(250)
+
+    protected val maxBatchSize by option("--max-batch-size", help = "Maximum adaptive batch size")
+        .int()
+        .default(4_000)
+
+    protected val targetBatchDurationMs by option(
+        "--target-batch-duration-ms",
+        help = "Target batch duration for adaptive batch sizing"
+    ).long()
+        .default(150)
 
     // Advanced options
     protected val dryRun by option("--dry-run", "-n", help = "Dry run (no actual changes)")
@@ -189,6 +221,10 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
             cacheLimit = cacheLimit,
             mappingStrategy = strategy,
             maxPoolSize = maxPoolSize,
+            adaptiveBatchSize = adaptiveBatchSize,
+            minBatchSize = minBatchSize,
+            maxBatchSize = maxBatchSize,
+            targetBatchDurationMs = targetBatchDurationMs,
 
             dryRun = dryRun,
             verbose = verbose,
@@ -243,6 +279,10 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
             cacheLimit = config["cacheLimit"]?.toInt() ?: cacheLimit,
             mappingStrategy = strategy,
             maxPoolSize = config["maxPoolSize"]?.toInt() ?: maxPoolSize,
+            adaptiveBatchSize = config["adaptiveBatchSize"]?.toBoolean() ?: adaptiveBatchSize,
+            minBatchSize = config["minBatchSize"]?.toInt() ?: minBatchSize,
+            maxBatchSize = config["maxBatchSize"]?.toInt() ?: maxBatchSize,
+            targetBatchDurationMs = config["targetBatchDurationMs"]?.toLong() ?: targetBatchDurationMs,
 
             dryRun = config["dryRun"]?.toBoolean() ?: dryRun,
             verbose = config["verbose"]?.toBoolean() ?: verbose,
@@ -265,6 +305,10 @@ abstract class MigrateCommand(private val migrationCommandName: String, help: St
             "cacheLimit" to cacheLimit.toString(),
             "mappingStrategy" to mappingStrategy.name,
             "maxPoolSize" to maxPoolSize.toString(),
+            "adaptiveBatchSize" to adaptiveBatchSize.toString(),
+            "minBatchSize" to minBatchSize.toString(),
+            "maxBatchSize" to maxBatchSize.toString(),
+            "targetBatchDurationMs" to targetBatchDurationMs.toString(),
             "syncStrategy" to syncStrategy,
             "dryRun" to dryRun.toString(),
             "verbose" to verbose.toString(),
@@ -300,6 +344,10 @@ cacheLimit: 500000
 mappingStrategy: LAZY
 maxPoolSize: 10
 connectionTimeout: 30000
+adaptiveBatchSize: false
+minBatchSize: 250
+maxBatchSize: 4000
+targetBatchDurationMs: 150
 
 # Sync Strategy (MEMORY_FILTERED, DB_FILTERED)
 syncStrategy: MEMORY_FILTERED

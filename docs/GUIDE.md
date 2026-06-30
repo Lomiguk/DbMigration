@@ -46,6 +46,10 @@
 | `--target-port` | `-tp` | Port target БД | 5432 |
 | `--target-db` | `-td` | Имя target БД | target_db |
 | `--batch-size` | `-b` | Размер пакета для `copy`, `resume` и `sync` | 1000 |
+| `--adaptive-batch-size` | — | Включить адаптивный размер batch для `copy`, `resume` и `sync` | false |
+| `--min-batch-size` | — | Минимальный размер batch в adaptive-режиме | 250 |
+| `--max-batch-size` | — | Максимальный размер batch в adaptive-режиме | 4000 |
+| `--target-batch-duration-ms` | — | Целевое время batch для adaptive-режима | 150 |
 | `--cache-limit` | `-c` | Лимит кэша | 500000 |
 | `--max-pool-size` | `-m` | Размер пула соединений | 10 |
 | `--dry-run` | `-n` | Пробный запуск | false |
@@ -102,6 +106,9 @@
 
 # Миграция с переносом индексов из source
 ./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 100000 --migrate-indexes"
+
+# Миграция с адаптивным размером batch
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 500000 --adaptive-batch-size"
 
 # Миграция с кастомными параметрами кэша/пула и индексами
 ./gradlew run --args="copy --mapping-strategy=HYBRID --cache-limit 300000 --max-pool-size 20 --migrate-indexes"
@@ -201,6 +208,10 @@ cacheLimit: 500000
 mappingStrategy: LAZY
 maxPoolSize: 10
 connectionTimeout: 30000
+adaptiveBatchSize: false
+minBatchSize: 250
+maxBatchSize: 4000
+targetBatchDurationMs: 150
 
 syncStrategy: MEMORY_FILTERED
 
@@ -386,6 +397,40 @@ verbose: true
 
 ---
 
+## Адаптивный размер batch
+
+`--adaptive-batch-size` меняет размер batch во время `copy`, `resume` и `sync`. Режим выключен по умолчанию: без флага используется фиксированный `--batch-size`.
+
+Алгоритм простой:
+
+1. первый batch берёт размер из `--batch-size`;
+2. если batch заметно быстрее целевого времени, следующий размер увеличивается на 25%;
+3. если batch заметно медленнее целевого времени, следующий размер уменьшается в 2 раза;
+4. размер всегда ограничен `--min-batch-size` и `--max-batch-size`.
+
+Рекомендуемый стартовый профиль уже задан в defaults:
+
+```bash
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 500000 --adaptive-batch-size"
+```
+
+Эквивалентная явная запись:
+
+```bash
+./gradlew run --args="copy --mapping-strategy=LAZY --cache-limit 500000 --adaptive-batch-size --min-batch-size 250 --max-batch-size 4000 --target-batch-duration-ms 150"
+```
+
+Практические ориентиры:
+
+| Сценарий | Ожидаемое поведение |
+|----------|---------------------|
+| Средний/большой dataset, много batch overhead | Обычно меньше batch и выше throughput |
+| Малый dataset | Выигрыш может быть нулевым |
+| Слишком низкий target, например `50ms` | Batch может дробиться и результат может ухудшиться |
+| Слишком высокий `max-batch-size` | Возможен рост latency batch и памяти без заметного выигрыша |
+
+Для релизной проверки сравнивайте adaptive и baseline на одинаковом seed после полного сброса Docker volume. В тестовом стенде профиль `150ms / 4000` на `199860` строк сократил COPY примерно на 35% относительно фиксированного `batchSize=1000`, а полный сценарий `copy -> WAL replicate -> validate` прошёл с `19986/19986` применённых WAL-событий и `20/20` валидных таблиц.
+
 ## Логирование производительности
 
 ### Файлы логов
@@ -395,9 +440,12 @@ verbose: true
 | Файл | Содержание |
 |------|------------|
 | `run_config.txt` | Команда, стратегия, cacheLimit, batchSize, параметры БД |
+| `run_manifest.json` | Машиночитаемый manifest запуска: команда, commit, Java/OS, параметры |
 | `summary.txt` | Текстовая сводка |
 | `batch_performance.csv` | Сводка батчей (`copy_data`, `mapping_save`, commit, r/s) |
-| `batch_phase_performance.csv` | Детализация фаз: `fk_lookup`, `id_allocation`, `csv_build`, `copy_data`, `mapping_save`, `commit` |
+| `batch_phase_performance.csv` | Детализация фаз: `source_read`, `fk_lookup`, `id_allocation`, `csv_build`, `copy_data`, `mapping_save`, `commit` |
+| `adaptive_batch_decisions.csv` | Решения adaptive-контроллера по изменению размера batch |
+| `wal_sync_performance.csv` | Разложение WAL sync на чтение и применение событий |
 | `mapping_performance.csv` | Метрики сохранения mapping batch |
 | `mapping_db_lookup.csv` | DB lookup на cache miss: strategy, table, duration, found |
 | `cache_snapshots.csv` | total/lazy/pinned cache, hit rate, evictions, misses |
@@ -407,7 +455,19 @@ verbose: true
 ### Формат batch_performance CSV
 
 ```csv
-timestamp,table,batch_number,records_total,insert_duration_ms,mapping_duration_ms,commit_duration_ms,total_batch_ms,records_per_sec
+timestamp,table,batch_number,batch_size,records_total,insert_duration_ms,mapping_duration_ms,commit_duration_ms,total_batch_ms,records_per_sec
+```
+
+### Формат adaptive_batch_decisions CSV
+
+```csv
+timestamp,table,batch_number,previous_batch_size,next_batch_size,batch_duration_ms,target_duration_ms,reason
+```
+
+### Формат wal_sync_performance CSV
+
+```csv
+timestamp,slot_name,events_read,events_applied,events_failed,read_duration_ms,apply_duration_ms,total_duration_ms,last_lsn
 ```
 
 ### Ожидаемые метрики (1M записей)
@@ -448,6 +508,8 @@ plt.show()
 |------|------------|
 | `batch_performance.csv` | Время каждого батча (insert, mapping, commit, r/s) |
 | `batch_phase_performance.csv` | Время каждой внутренней фазы batch |
+| `adaptive_batch_decisions.csv` | Изменения размера batch в adaptive-режиме |
+| `wal_sync_performance.csv` | Время чтения и применения WAL-событий |
 | `mapping_performance.csv` | Время сохранения mapping |
 | `mapping_db_lookup.csv` | DB lookup при cache miss |
 | `cache_snapshots.csv` | Состояние cache |

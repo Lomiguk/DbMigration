@@ -92,7 +92,14 @@ class MigrateCopyCommand : MigrateCommand(
             }
 
             MetricsService.registerCacheMetrics(mappingService)
-            val migrator = DataMigrator(sourceDs, targetDs, mappingService, reader, batchSize = config.batchSize)
+            val migrator = DataMigrator(
+                sourceDs,
+                targetDs,
+                mappingService,
+                reader,
+                batchSize = config.batchSize,
+                adaptiveBatchConfig = config.adaptiveBatchConfig
+            )
 
             if (!config.dryRun) {
                 migrator.createTargetSchema(migrationOrder)

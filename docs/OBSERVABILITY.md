@@ -85,9 +85,12 @@
 ```
 performance_logs/run_YYYYMMDD_HHMMSS/
 ├── run_config.txt
+├── run_manifest.json
 ├── summary.txt
 ├── batch_performance.csv
 ├── batch_phase_performance.csv
+├── adaptive_batch_decisions.csv
+├── wal_sync_performance.csv
 ├── mapping_performance.csv
 ├── mapping_db_lookup.csv
 ├── cache_snapshots.csv
@@ -100,9 +103,12 @@ performance_logs/run_YYYYMMDD_HHMMSS/
 | Файл | Содержание |
 |------|-----------|
 | `run_config.txt` | Команда, стратегия, `cacheLimit`, batch size, параметры подключения |
+| `run_manifest.json` | Машиночитаемый manifest запуска: команда, git branch/commit, Java/OS, параметры |
 | `summary.txt` | Человекочитаемый отчёт: общее время, средняя скорость, статистика по каждой таблице |
-| `batch_performance.csv` | Лог каждого батча. Колонки: `timestamp, table, batch_number, records_total, insert_duration_ms, mapping_duration_ms, commit_duration_ms, total_batch_ms, records_per_sec` |
-| `batch_phase_performance.csv` | Детализация фаз batch: `fk_lookup`, `id_allocation`, `csv_build`, `copy_data`, `mapping_save`, `commit` |
+| `batch_performance.csv` | Лог каждого батча. Колонки: `timestamp, table, batch_number, batch_size, records_total, insert_duration_ms, mapping_duration_ms, commit_duration_ms, total_batch_ms, records_per_sec` |
+| `batch_phase_performance.csv` | Детализация фаз batch: `source_read`, `fk_lookup`, `id_allocation`, `csv_build`, `copy_data`, `mapping_save`, `commit` |
+| `adaptive_batch_decisions.csv` | Решения adaptive-контроллера: предыдущий/следующий batch size, длительность batch и причина |
+| `wal_sync_performance.csv` | События WAL sync: read/apply/fail count, read/apply/total duration, last LSN |
 | `mapping_performance.csv` | Производительность сохранения UUID→BIGINT mapping |
 | `mapping_db_lookup.csv` | DB lookup на cache miss: `timestamp, strategy, table, duration_ms, found` |
 | `cache_snapshots.csv` | `cache_size`, `lazy_cache_size`, `pinned_cache_size`, hit rate, evictions, misses |
@@ -151,6 +157,22 @@ docker compose up -d
 .\gradlew.bat run --args="generate-data --count 1000000 --seed 42"
 .\gradlew.bat run --args="copy --mapping-strategy=LAZY --cache-limit 100000 --migrate-indexes"
 ```
+
+Для проверки adaptive batch сравнивайте фиксированный batch и adaptive на одном наборе данных:
+
+```powershell
+docker compose down -v
+docker compose up -d
+.\gradlew.bat run --args="generate-data --count 30000 --truncate true --seed 42"
+.\gradlew.bat run --args="copy --mapping-strategy=LAZY --batch-size 1000 --cache-limit 500000"
+
+docker compose down -v
+docker compose up -d
+.\gradlew.bat run --args="generate-data --count 30000 --truncate true --seed 42"
+.\gradlew.bat run --args="copy --mapping-strategy=LAZY --batch-size 1000 --cache-limit 500000 --adaptive-batch-size"
+```
+
+Смотрите не только total time, но и `batch_performance.csv`, `batch_phase_performance.csv` и `adaptive_batch_decisions.csv`. Если adaptive уменьшает batch на малом dataset или при слишком низком target, выигрыш может исчезнуть.
 
 Меняйте только `--mapping-strategy` и, если нужно, `--cache-limit`. После завершения каждого прогона сохраните:
 - каталог `performance_logs/run_YYYYMMDD_HHMMSS/`

@@ -61,7 +61,14 @@ class MigrateSyncCommand : MigrateCommand(
                 mappingService.preloadAllMappings(tables)
             }
             MetricsService.registerCacheMetrics(mappingService)
-            val migrator = DataMigrator(source, target, mappingService, reader, batchSize = config.batchSize)
+            val migrator = DataMigrator(
+                source,
+                target,
+                mappingService,
+                reader,
+                batchSize = config.batchSize,
+                adaptiveBatchConfig = config.adaptiveBatchConfig
+            )
             val syncEngine = ChangeCapture(migrator, mappingService)
 
             var totalNewRows = 0L
