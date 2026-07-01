@@ -1,5 +1,7 @@
 package logging
 
+import core.DependencyAnalysis
+import core.TableIdentityInfo
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.io.FileWriter
@@ -30,6 +32,8 @@ object PerformanceLogger {
     private var cacheLog: PrintWriter? = null
     private var adaptiveBatchLog: PrintWriter? = null
     private var walSyncLog: PrintWriter? = null
+    private var schemaInventoryLog: PrintWriter? = null
+    private var dependencyAnalysisLog: PrintWriter? = null
     private var jvmLog: PrintWriter? = null
     private var runConfigLog: PrintWriter? = null
     private var poolLog: PrintWriter? = null
@@ -62,6 +66,8 @@ object PerformanceLogger {
         cacheLog = PrintWriter(FileWriter("$runLogDir/cache_snapshots.csv"))
         adaptiveBatchLog = PrintWriter(FileWriter("$runLogDir/adaptive_batch_decisions.csv"))
         walSyncLog = PrintWriter(FileWriter("$runLogDir/wal_sync_performance.csv"))
+        schemaInventoryLog = PrintWriter(FileWriter("$runLogDir/schema_inventory.csv"))
+        dependencyAnalysisLog = PrintWriter(FileWriter("$runLogDir/dependency_analysis.csv"))
         jvmLog = PrintWriter(FileWriter("$runLogDir/jvm_snapshots.csv"))
         runConfigLog = PrintWriter(FileWriter("$runLogDir/run_config.txt"))
         poolLog = PrintWriter(FileWriter("$runLogDir/connection_pool.csv"))
@@ -74,6 +80,8 @@ object PerformanceLogger {
         cacheLog?.println("timestamp,strategy,cache_size,lazy_cache_size,pinned_cache_size,hit_rate,eviction_count,request_count,miss_count")
         adaptiveBatchLog?.println("timestamp,table,batch_number,previous_batch_size,next_batch_size,batch_duration_ms,target_duration_ms,reason")
         walSyncLog?.println("timestamp,slot_name,events_read,events_applied,events_failed,read_duration_ms,apply_duration_ms,total_duration_ms,last_lsn")
+        schemaInventoryLog?.println("timestamp,table,pk_columns,pk_types,eligible,skip_reason")
+        dependencyAnalysisLog?.println("timestamp,record_type,tables,details")
         jvmLog?.println("timestamp,heap_used_bytes,heap_committed_bytes,heap_max_bytes,non_heap_used_bytes,gc_count,gc_time_ms,available_processors")
         poolLog?.println("timestamp,table,active_connections,idle_connections,total_connections,waiting_threads")
         
@@ -257,6 +265,46 @@ object PerformanceLogger {
         walSyncLog?.flush()
     }
 
+    fun logSchemaInventory(tables: List<TableIdentityInfo>) {
+        ensureInitialized()
+
+        val elapsed = System.currentTimeMillis() - totalStartTime
+        tables.forEach { table ->
+            schemaInventoryLog?.println(
+                "$elapsed,${csv(table.tableName)},${csv(table.primaryKeyColumns.joinToString("|"))}," +
+                    "${csv(table.primaryKeyTypes.joinToString("|"))},${table.eligibleForUuidMigration}," +
+                    csv(table.skipReason ?: "")
+            )
+        }
+        schemaInventoryLog?.flush()
+    }
+
+    fun logDependencyAnalysis(analysis: DependencyAnalysis) {
+        ensureInitialized()
+
+        val elapsed = System.currentTimeMillis() - totalStartTime
+        dependencyAnalysisLog?.println(
+            "$elapsed,migration_order,${csv(analysis.migrationOrder.joinToString("|"))},${analysis.migrationOrder.size}"
+        )
+        analysis.cyclicComponents.forEach { component ->
+            dependencyAnalysisLog?.println(
+                "$elapsed,cycle,${csv(component.joinToString("|"))},${component.size}"
+            )
+        }
+        if (analysis.blockedTables.isNotEmpty()) {
+            dependencyAnalysisLog?.println(
+                "$elapsed,blocked_tables,${csv(analysis.blockedTables.joinToString("|"))},${analysis.blockedTables.size}"
+            )
+        }
+        analysis.blockedRelations.forEach { relation ->
+            dependencyAnalysisLog?.println(
+                "$elapsed,blocked_relation,${csv("${relation.parentTable}->${relation.childTable}")},"
+                    + csv("${relation.parentTable},${relation.childTable}")
+            )
+        }
+        dependencyAnalysisLog?.flush()
+    }
+
     /**
      * Начало миграции таблицы
      */
@@ -337,6 +385,8 @@ object PerformanceLogger {
         summaryLog?.println("  - $runLogDir/cache_snapshots.csv")
         summaryLog?.println("  - $runLogDir/adaptive_batch_decisions.csv")
         summaryLog?.println("  - $runLogDir/wal_sync_performance.csv")
+        summaryLog?.println("  - $runLogDir/schema_inventory.csv")
+        summaryLog?.println("  - $runLogDir/dependency_analysis.csv")
         summaryLog?.println("  - $runLogDir/jvm_snapshots.csv")
         summaryLog?.println("  - $runLogDir/run_config.txt")
         summaryLog?.println("  - $runLogDir/run_manifest.json")
@@ -352,6 +402,8 @@ object PerformanceLogger {
         cacheLog?.flush()
         adaptiveBatchLog?.flush()
         walSyncLog?.flush()
+        schemaInventoryLog?.flush()
+        dependencyAnalysisLog?.flush()
         jvmLog?.flush()
         runConfigLog?.flush()
         poolLog?.flush()
@@ -364,6 +416,8 @@ object PerformanceLogger {
         cacheLog?.close()
         adaptiveBatchLog?.close()
         walSyncLog?.close()
+        schemaInventoryLog?.close()
+        dependencyAnalysisLog?.close()
         jvmLog?.close()
         runConfigLog?.close()
         poolLog?.close()

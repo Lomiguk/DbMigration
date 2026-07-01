@@ -11,6 +11,13 @@ data class ForeignKeyColumn(
     val refTable: String,
     val refColumn: String
 )
+data class TableIdentityInfo(
+    val tableName: String,
+    val primaryKeyColumns: List<String>,
+    val primaryKeyTypes: List<String>,
+    val eligibleForUuidMigration: Boolean,
+    val skipReason: String?
+)
 
 class MetadataReader(private val dataSource: DataSource) {
 
@@ -40,9 +47,15 @@ class MetadataReader(private val dataSource: DataSource) {
                     ccu.table_name AS ref_table, 
                     ccu.column_name AS ref_column
                 FROM information_schema.table_constraints AS tc 
-                JOIN information_schema.key_column_usage AS kcu ON tc.constraint_name = kcu.constraint_name 
-                JOIN information_schema.constraint_column_usage AS ccu ON ccu.constraint_name = tc.constraint_name 
-                WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = ?
+                JOIN information_schema.key_column_usage AS kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                    AND tc.constraint_schema = kcu.constraint_schema
+                JOIN information_schema.constraint_column_usage AS ccu
+                    ON ccu.constraint_name = tc.constraint_name
+                    AND ccu.constraint_schema = tc.constraint_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND tc.table_schema = 'public'
+                  AND tc.table_name = ?
             """.trimIndent()
             val pstmt = conn.prepareStatement(sql)
             pstmt.setString(1, tableName)
@@ -64,9 +77,15 @@ class MetadataReader(private val dataSource: DataSource) {
             val sql = """
                 SELECT ccu.table_name AS parent_table, tc.table_name AS child_table
                 FROM information_schema.table_constraints AS tc
-                JOIN information_schema.key_column_usage AS kcu ON tc.constraint_name = kcu.constraint_name
-                JOIN information_schema.constraint_column_usage AS ccu ON ccu.constraint_name = tc.constraint_name
-                WHERE tc.constraint_type = 'FOREIGN KEY';
+                JOIN information_schema.key_column_usage AS kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                    AND tc.constraint_schema = kcu.constraint_schema
+                JOIN information_schema.constraint_column_usage AS ccu
+                    ON ccu.constraint_name = tc.constraint_name
+                    AND ccu.constraint_schema = tc.constraint_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND tc.table_schema = 'public'
+                ORDER BY parent_table, child_table;
             """.trimIndent()
             val rs = conn.createStatement().executeQuery(sql)
             while (rs.next()) {
@@ -77,21 +96,67 @@ class MetadataReader(private val dataSource: DataSource) {
     }
 
     fun getAllTablesWithUuidPk(): List<String> {
-        val tables = mutableListOf<String>()
+        return getTableIdentityInfo()
+            .filter { it.eligibleForUuidMigration }
+            .map { it.tableName }
+    }
+
+    fun getTableIdentityInfo(): List<TableIdentityInfo> {
+        val rows = linkedMapOf<String, MutableList<Pair<String, String>>>()
         dataSource.connection.use { conn ->
             val sql = """
-                SELECT t.table_name FROM information_schema.tables t
-                JOIN information_schema.columns c ON t.table_name = c.table_name
-                JOIN information_schema.table_constraints tc ON t.table_name = tc.table_name
-                JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
-                WHERE tc.constraint_type = 'PRIMARY KEY' AND c.column_name = kcu.column_name
-                  AND c.data_type = 'uuid' AND t.table_schema = 'public';
+                SELECT
+                    t.table_name,
+                    kcu.column_name,
+                    c.data_type
+                FROM information_schema.tables t
+                LEFT JOIN information_schema.table_constraints tc
+                    ON tc.table_schema = t.table_schema
+                    AND tc.table_name = t.table_name
+                    AND tc.constraint_type = 'PRIMARY KEY'
+                LEFT JOIN information_schema.key_column_usage kcu
+                    ON kcu.constraint_schema = tc.constraint_schema
+                    AND kcu.constraint_name = tc.constraint_name
+                    AND kcu.table_schema = tc.table_schema
+                    AND kcu.table_name = tc.table_name
+                LEFT JOIN information_schema.columns c
+                    ON c.table_schema = t.table_schema
+                    AND c.table_name = t.table_name
+                    AND c.column_name = kcu.column_name
+                WHERE t.table_schema = 'public'
+                  AND t.table_type = 'BASE TABLE'
+                ORDER BY t.table_name, kcu.ordinal_position;
             """.trimIndent()
             val rs = conn.createStatement().executeQuery(sql)
             while (rs.next()) {
-                tables.add(rs.getString("table_name"))
+                val tableName = rs.getString("table_name")
+                val columnName = rs.getString("column_name")
+                val dataType = rs.getString("data_type")
+                val keys = rows.getOrPut(tableName) { mutableListOf() }
+                if (columnName != null && dataType != null) {
+                    keys.add(columnName to dataType)
+                }
             }
         }
-        return tables
+
+        return rows.map { (tableName, keyColumns) ->
+            val columns = keyColumns.map { it.first }
+            val types = keyColumns.map { it.second }
+            val skipReason = when {
+                columns.isEmpty() -> "NO_PRIMARY_KEY"
+                columns.size > 1 -> "COMPOSITE_PRIMARY_KEY"
+                columns.first() != "id" -> "PRIMARY_KEY_NOT_ID"
+                !types.first().equals("uuid", ignoreCase = true) -> "NON_UUID_PRIMARY_KEY"
+                else -> null
+            }
+
+            TableIdentityInfo(
+                tableName = tableName,
+                primaryKeyColumns = columns,
+                primaryKeyTypes = types,
+                eligibleForUuidMigration = skipReason == null,
+                skipReason = skipReason
+            )
+        }
     }
 }

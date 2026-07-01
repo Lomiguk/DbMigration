@@ -4,6 +4,7 @@ import com.github.ajalt.mordant.terminal.Terminal
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import core.MetadataReader
+import core.MigrationScopePlanner
 import logging.MetricsService
 import ui.MigrationUi
 import validation.DataIntegrityValidator
@@ -34,7 +35,9 @@ class MigrateValidateCommand : MigrateCommand(
 
             // Получение списка таблиц
             val reader = MetadataReader(source)
-            val tables = reader.getAllTablesWithUuidPk()
+            val scope = MigrationScopePlanner.analyze(reader)
+            MigrationScopeReporter.report(scope, ui, terminal)
+            val tables = scope.migrationOrder
 
             ui.printInfo("Таблиц для валидации: ${tables.size}")
             ui.printSectionTitle("Запуск валидации")

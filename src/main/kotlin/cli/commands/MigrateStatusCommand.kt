@@ -4,6 +4,7 @@ import com.github.ajalt.mordant.terminal.Terminal
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import core.MetadataReader
+import core.MigrationScopePlanner
 import engine.MappingServiceFactory
 import logging.MetricsService
 import ui.MigrationUi
@@ -36,7 +37,9 @@ class MigrateStatusCommand : MigrateCommand(
             // Получение информации о source database
             ui.printSectionTitle("Source Database (UUID)")
             val sourceReader = MetadataReader(source)
-            val sourceTables = sourceReader.getAllTablesWithUuidPk()
+            val scope = MigrationScopePlanner.analyze(sourceReader)
+            MigrationScopeReporter.report(scope, ui, terminal)
+            val sourceTables = scope.migrationOrder
 
             sourceTables.forEach { table ->
                 val rowCount = getRowCount(source, table)
@@ -46,8 +49,7 @@ class MigrateStatusCommand : MigrateCommand(
 
             // Получение информации о target database
             ui.printSectionTitle("Target Database (BIGINT)")
-            val targetReader = MetadataReader(target)
-            val targetTables = targetReader.getAllTablesWithUuidPk()
+            val targetTables = sourceTables.filter { tableExists(target, it) }
 
             if (targetTables.isEmpty()) {
                 ui.printWarning("Целевая схема ещё не создана")
@@ -115,6 +117,21 @@ class MigrateStatusCommand : MigrateCommand(
                 return if (rs.next()) rs.getString("size") else "N/A"
             } catch (e: Exception) {
                 return "N/A"
+            }
+        }
+    }
+
+    private fun tableExists(ds: HikariDataSource, tableName: String): Boolean {
+        ds.connection.use { conn ->
+            conn.prepareStatement(
+                """
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = ?
+                """.trimIndent()
+            ).use { pstmt ->
+                pstmt.setString(1, tableName)
+                return pstmt.executeQuery().next()
             }
         }
     }

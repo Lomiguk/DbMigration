@@ -1,6 +1,7 @@
 package replication
 
 import core.MetadataReader
+import core.MigrationScopePlanner
 import engine.MappingServiceBase
 import logging.MetricsService
 import logging.PerformanceLogger
@@ -40,7 +41,7 @@ class ReplicationService(
 
         slotManager = SlotManager(sourceDataSource)
 
-        val tables = metadataReader.getAllTablesWithUuidPk()
+        val tables = MigrationScopePlanner.analyze(metadataReader).migrationOrder
         slotManager.setupReplicaIdentity(tables)
 
         walReader = WalReader(sourceDataSource, config)
@@ -49,9 +50,8 @@ class ReplicationService(
         // Регистрируем Gauge для отслеживания replication lag
         MetricsService.registerReplicationLagSupplier { getLag() }
 
-        // Создаём replication slot
-        if (!slotManager.slotExists(config.slotName)) {
-            slotManager.createSlot(config.slotName, temporary = config.temporary)
+        // Создаём replication slot или обновляем publication для уже существующего slot.
+        if (slotManager.createSlot(config.slotName, temporary = config.temporary, publicationTables = tables)) {
             logger.info("Created replication slot: ${config.slotName}")
         }
 

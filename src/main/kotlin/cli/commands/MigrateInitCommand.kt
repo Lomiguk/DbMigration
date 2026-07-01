@@ -3,8 +3,8 @@ package cli.commands
 import com.github.ajalt.mordant.terminal.Terminal
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
-import core.DependencyResolver
 import core.MetadataReader
+import core.MigrationScopePlanner
 import ui.MigrationUi
 import utils.HikariFactory
 
@@ -34,19 +34,13 @@ class MigrateInitCommand : MigrateCommand(
             // Анализ метаданных
             ui.printInfo("Чтение метаданных схемы...")
             val reader = MetadataReader(sourceDs)
-
-            val tables = reader.getAllTablesWithUuidPk()
-            val relations = reader.getForeignKeys()
-
-            ui.printSuccess("Найдено таблиц с UUID PK: ${tables.size}")
-            ui.printSuccess("Найдено внешних ключей: ${relations.size}")
+            val scope = MigrationScopePlanner.analyze(reader)
+            MigrationScopeReporter.report(scope, ui, terminal)
+            ui.printSuccess("Найдено внешних ключей: ${scope.relations.size}")
 
             // Построение графа зависимостей
             ui.printInfo("Построение графа зависимостей...")
-            val resolver = DependencyResolver()
-            resolver.buildGraph(tables, relations)
-
-            val migrationOrder = resolver.getMigrationOrder()
+            val migrationOrder = scope.migrationOrder
 
             // Вывод порядка миграции
             ui.printSectionTitle("Порядок миграции таблиц")

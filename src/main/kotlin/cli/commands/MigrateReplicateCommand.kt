@@ -7,6 +7,7 @@ import com.github.ajalt.mordant.terminal.Terminal
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
 import core.MetadataReader
+import core.MigrationScopePlanner
 import engine.HybridTableSelector
 import engine.MappingServiceFactory
 import engine.MappingStrategy
@@ -60,7 +61,9 @@ class MigrateReplicateCommand : MigrateCommand(
                 strategy = config.mappingStrategy,
                 cacheLimit = config.cacheLimit
             )
-            val tables = MetadataReader(sourceDs).getAllTablesWithUuidPk()
+            val scope = MigrationScopePlanner.analyze(MetadataReader(sourceDs))
+            MigrationScopeReporter.report(scope, ui, terminal)
+            val tables = scope.migrationOrder
             if (config.mappingStrategy == MappingStrategy.HYBRID) {
                 val pinnedTables = HybridTableSelector.selectPinnedTables(sourceDs, tables, config.cacheLimit)
                 mappingService.configurePinnedTables(pinnedTables)

@@ -3,8 +3,8 @@ package cli.commands
 import com.github.ajalt.mordant.terminal.Terminal
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
-import core.DependencyResolver
 import core.MetadataReader
+import core.MigrationScopePlanner
 import engine.DataMigrator
 import engine.HybridTableSelector
 import engine.MappingServiceFactory
@@ -62,12 +62,9 @@ class MigrateResumeCommand : MigrateCommand(
 
             // Получение порядка таблиц
             val reader = MetadataReader(sourceDs)
-            val tables = reader.getAllTablesWithUuidPk()
-            val relations = reader.getForeignKeys()
-
-            val resolver = DependencyResolver()
-            resolver.buildGraph(tables, relations)
-            val migrationOrder = resolver.getMigrationOrder()
+            val scope = MigrationScopePlanner.analyze(reader)
+            MigrationScopeReporter.report(scope, ui, terminal)
+            val migrationOrder = scope.migrationOrder
 
             // Фильтрация только тех таблиц, которые нужно мигрировать
             val tablesToMigrate = migrationOrder.filter { table ->

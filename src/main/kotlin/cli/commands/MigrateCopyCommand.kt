@@ -5,8 +5,8 @@ import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.mordant.terminal.Terminal
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
-import core.DependencyResolver
 import core.MetadataReader
+import core.MigrationScopePlanner
 import engine.DataMigrator
 import engine.HybridTableSelector
 import engine.MappingServiceFactory
@@ -58,13 +58,9 @@ class MigrateCopyCommand : MigrateCommand(
             // Анализ схемы
             ui.printInfo("Анализ схемы source database...")
             val reader = MetadataReader(sourceDs)
-            val tables = reader.getAllTablesWithUuidPk()
-            val relations = reader.getForeignKeys()
-
-            // Построение порядка миграции
-            val resolver = DependencyResolver()
-            resolver.buildGraph(tables, relations)
-            val migrationOrder = resolver.getMigrationOrder()
+            val scope = MigrationScopePlanner.analyze(reader)
+            MigrationScopeReporter.report(scope, ui, terminal)
+            val migrationOrder = scope.migrationOrder
 
             ui.printSuccess("Порядок миграции: ${migrationOrder.joinToString(" → ")}")
 

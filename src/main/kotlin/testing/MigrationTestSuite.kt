@@ -1,7 +1,7 @@
 package testing
 
-import core.DependencyResolver
 import core.MetadataReader
+import core.MigrationScopePlanner
 import engine.DataMigrator
 import engine.MappingServiceFactory
 import engine.MappingServiceBase
@@ -66,12 +66,9 @@ class MigrationTestSuite(
             DataMigrator(sourceDs, targetDs, mappingService, metadataReader)
         }
 
-        val tables = metadataReader.getAllTablesWithUuidPk()
-        val relations = metadataReader.getForeignKeys()
-
-        val resolver = DependencyResolver()
-        resolver.buildGraph(tables, relations)
-        val migrationOrder = resolver.getMigrationOrder()
+        val scope = MigrationScopePlanner.analyze(metadataReader)
+        val tables = scope.eligibleTables
+        val migrationOrder = scope.migrationOrder
 
         return MigrationContext(metadataReader, mappingService, migrator, tables, migrationOrder)
     }
@@ -472,7 +469,7 @@ class MigrationTestSuite(
     private fun truncateTarget() {
         targetDs.connection.use { conn ->
             conn.createStatement().execute("TRUNCATE TABLE migration_mapping CASCADE")
-            val tables = MetadataReader(sourceDs).getAllTablesWithUuidPk()
+            val tables = MigrationScopePlanner.analyze(MetadataReader(sourceDs)).migrationOrder
             tables.forEach { table ->
                 try {
                     conn.createStatement().execute("TRUNCATE TABLE $table CASCADE")

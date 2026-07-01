@@ -3,8 +3,8 @@ package cli.commands
 import com.github.ajalt.mordant.terminal.Terminal
 import com.zaxxer.hikari.HikariDataSource
 import config.MigrateCommand
-import core.DependencyResolver
 import core.MetadataReader
+import core.MigrationScopePlanner
 import engine.DataMigrator
 import engine.HybridTableSelector
 import engine.MappingServiceFactory
@@ -41,12 +41,9 @@ class MigrateSyncCommand : MigrateCommand(
 
             // Получение порядка таблиц
             val reader = MetadataReader(source)
-            val tables = reader.getAllTablesWithUuidPk()
-            val relations = reader.getForeignKeys()
-
-            val resolver = DependencyResolver()
-            resolver.buildGraph(tables, relations)
-            val migrationOrder = resolver.getMigrationOrder()
+            val scope = MigrationScopePlanner.analyze(reader)
+            MigrationScopeReporter.report(scope, ui, terminal)
+            val migrationOrder = scope.migrationOrder
 
             // Получение количества уже мигрированных записей
             ui.printInfo("Анализ текущего состояния...")
@@ -58,7 +55,7 @@ class MigrateSyncCommand : MigrateCommand(
             }
             if (config.mappingStrategy == MappingStrategy.EAGER || config.mappingStrategy == MappingStrategy.HYBRID) {
                 ui.printInfo("Предзагрузка маппингов для синхронизации...")
-                mappingService.preloadAllMappings(tables)
+                mappingService.preloadAllMappings(migrationOrder)
             }
             MetricsService.registerCacheMetrics(mappingService)
             val migrator = DataMigrator(

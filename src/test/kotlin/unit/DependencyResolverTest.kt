@@ -223,6 +223,43 @@ class DependencyResolverTest {
     }
 
     @Nested
+    @DisplayName("Cycle Handling")
+    inner class CycleHandling {
+
+        @Test
+        fun `should localize cycle and keep independent tables migratable`() {
+            val cycleTables = listOf("a", "b", "blocked_child", "dictionary")
+            val cycleRelations = listOf(
+                TableRelation("a", "b"),
+                TableRelation("b", "a"),
+                TableRelation("b", "blocked_child")
+            )
+
+            resolver.buildGraph(cycleTables, cycleRelations)
+            val analysis = resolver.analyze()
+
+            assertThat(analysis.hasCycles).isTrue()
+            assertThat(analysis.cyclicComponents).containsExactly(setOf("a", "b"))
+            assertThat(analysis.blockedTables).containsExactlyInAnyOrder("a", "b", "blocked_child")
+            assertThat(analysis.migrationOrder).containsExactly("dictionary")
+        }
+
+        @Test
+        fun `should detect self-referencing table as cycle`() {
+            resolver.buildGraph(
+                listOf("employee", "department"),
+                listOf(TableRelation("employee", "employee"))
+            )
+
+            val analysis = resolver.analyze()
+
+            assertThat(analysis.cyclicComponents).containsExactly(setOf("employee"))
+            assertThat(analysis.blockedTables).containsExactly("employee")
+            assertThat(analysis.migrationOrder).containsExactly("department")
+        }
+    }
+
+    @Nested
     @DisplayName("Real-world Project Scenarios")
     inner class RealWorldScenarios {
 

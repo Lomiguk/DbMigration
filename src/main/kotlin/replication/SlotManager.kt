@@ -22,7 +22,7 @@ class SlotManager(private val dataSource: DataSource) {
             conn.createStatement().use { stmt ->
                 tables.forEach { table ->
                     try {
-                        stmt.execute("ALTER TABLE $table REPLICA IDENTITY FULL;")
+                        stmt.execute("ALTER TABLE ${qualifiedTable(table)} REPLICA IDENTITY FULL;")
                     } catch (e: Exception) {
                         logger.warn("Failed to set REPLICA IDENTITY for $table: ${e.message}")
                     }
@@ -34,17 +34,16 @@ class SlotManager(private val dataSource: DataSource) {
     /**
      * Создание replication slot
      */
-    fun createSlot(slotName: String, temporary: Boolean = false): Boolean {
+    fun createSlot(slotName: String, temporary: Boolean = false, publicationTables: List<String> = emptyList()): Boolean {
         dataSource.connection.use { conn ->
             try {
+                createPublication(conn, "dbmigration_publication", publicationTables)
+
                 // Проверяем существует ли уже слот
                 if (slotExists(slotName)) {
                     logger.warn("Replication slot '$slotName' already exists")
                     return false
                 }
-
-                // Создаём публикацию для pgoutput
-                createPublication(conn, "dbmigration_publication")
 
                 // Создаём replication slot с pgoutput плагином
                 val sql = if (temporary) {
@@ -112,21 +111,34 @@ class SlotManager(private val dataSource: DataSource) {
     /**
      * Создание публикации для logical replication
      */
-    private fun createPublication(conn: Connection, publicationName: String) {
+    private fun createPublication(conn: Connection, publicationName: String, tables: List<String>) {
         try {
-            // Создаём публикацию для всех таблиц
-            val sql = "CREATE PUBLICATION $publicationName FOR ALL TABLES"
+            val sql = if (tables.isEmpty()) {
+                "CREATE PUBLICATION $publicationName FOR ALL TABLES"
+            } else {
+                "CREATE PUBLICATION $publicationName FOR TABLE ${tables.joinToString(", ") { qualifiedTable(it) }}"
+            }
             conn.createStatement().execute(sql)
-            logger.info("Created publication: $publicationName")
+            logger.info("Created publication: $publicationName (${if (tables.isEmpty()) "all tables" else "${tables.size} tables"})")
         } catch (e: SQLException) {
             // Публикация может уже существовать
             if (e.sqlState == "42710") { // duplicate_object
-                logger.debug("Publication already exists")
+                if (tables.isNotEmpty()) {
+                    val sql = "ALTER PUBLICATION $publicationName SET TABLE ${tables.joinToString(", ") { qualifiedTable(it) }}"
+                    conn.createStatement().execute(sql)
+                    logger.info("Updated publication: $publicationName (${tables.size} tables)")
+                } else {
+                    logger.debug("Publication already exists")
+                }
             } else {
                 throw e
             }
         }
     }
+
+    private fun qualifiedTable(tableName: String): String = "${quoteIdentifier("public")}.${quoteIdentifier(tableName)}"
+
+    private fun quoteIdentifier(identifier: String): String = "\"${identifier.replace("\"", "\"\"")}\""
 
     /**
      * Удаление replication slot

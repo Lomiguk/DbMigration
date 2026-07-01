@@ -160,3 +160,45 @@ CREATE TABLE campaign_stats
     clicks      INT
 );
 CREATE INDEX idx_campaign_stats_campaign_id ON campaign_stats (campaign_id);
+
+-- Блок 5: Граничные случаи для анализа схемы
+CREATE TABLE cycle_a
+(
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cycle_b_id UUID,
+    name       TEXT
+);
+
+CREATE TABLE cycle_b
+(
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cycle_a_id UUID,
+    name       TEXT
+);
+
+ALTER TABLE cycle_a
+    ADD CONSTRAINT fk_cycle_a_b FOREIGN KEY (cycle_b_id) REFERENCES cycle_b (id);
+ALTER TABLE cycle_b
+    ADD CONSTRAINT fk_cycle_b_a FOREIGN KEY (cycle_a_id) REFERENCES cycle_a (id);
+
+CREATE INDEX idx_cycle_a_cycle_b_id ON cycle_a (cycle_b_id);
+CREATE INDEX idx_cycle_b_cycle_a_id ON cycle_b (cycle_a_id);
+
+CREATE TABLE legacy_integer_audit
+(
+    id         BIGSERIAL PRIMARY KEY,
+    message    TEXT,
+    created_at TIMESTAMP DEFAULT now()
+);
+
+CREATE TABLE external_reference_codes
+(
+    code        TEXT PRIMARY KEY,
+    description TEXT
+);
+
+CREATE TABLE staging_events
+(
+    event_id TEXT,
+    payload  TEXT
+);
